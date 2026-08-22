@@ -16,6 +16,7 @@ from core.security import scan as security_scan
 from tools.filesystem import write_file, ensure_workspace
 from tools.sandbox import run_in_sandbox
 from tools.test_runner import run_tests
+from tools import git_tool
 
 MAX_DEBUG_ATTEMPTS = 3
 
@@ -23,6 +24,7 @@ MAX_DEBUG_ATTEMPTS = 3
 def build(user_request: str) -> dict:
     print(f"\n=== AURA: received request ===\n{user_request}\n")
     ensure_workspace()
+    git_tool.ensure_repo()
 
     print("--- Architect: deciding approach ---")
     architecture = architect_design(user_request)
@@ -57,6 +59,8 @@ def build(user_request: str) -> dict:
         write_file("schema.sql", schema)
         written_files["schema.sql"] = schema
         print("  wrote schema.sql")
+
+    git_tool.commit("Initial implementation")
 
     print("\n--- Runner: executing setup commands (sandboxed) ---")
     command_results = []
@@ -130,6 +134,7 @@ def build(user_request: str) -> dict:
         test_result = new_test_result
         status = "PASSED" if test_result["passed"] else "FAILED"
         print(f"  tests: {status}")
+        git_tool.commit(f"Fix: {diagnosis.get('root_cause', 'debugger patch')[:70]}")
 
     print("\n--- Security: scanning files ---")
     security_result = security_scan(written_files)
@@ -147,6 +152,9 @@ def build(user_request: str) -> dict:
         print(f"  Reviewer could not complete: {e}")
         review_result = {"approved": None, "issues": [], "error": str(e)}
 
+    git_tool.commit("Security scan + review complete")
+    checkpoint_log = git_tool.log()
+
     report = {
         "request": user_request,
         "architecture": architecture,
@@ -158,6 +166,7 @@ def build(user_request: str) -> dict:
         "debug_log": debug_log,
         "security_result": security_result,
         "review_result": review_result,
+        "checkpoint_log": checkpoint_log,
     }
 
     print("\n=== BUILD SUMMARY ===")
@@ -167,5 +176,9 @@ def build(user_request: str) -> dict:
     print(f"Security      : {'PASS' if security_result['passed'] else 'ISSUES'}")
     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
     print("======================\n")
+    print("=== CHECKPOINTS (workspace/ has its own git history) ===")
+    print(checkpoint_log)
+    print("To roll back: cd workspace, then git reset --hard <commit-hash>")
+    print("==========================================================\n")
 
     return report
