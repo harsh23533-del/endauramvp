@@ -8,13 +8,17 @@ Loop:
 """
 from core.architect import design as architect_design
 from core.planner import plan
-from core.coder import write_code
+from core.coder import write_backend_code
+from core.frontend_coder import write_frontend_code
+from core.file_router import classify as classify_file
 from core.db_agent import design_schema
 from core.debugger import debug
 from core.infra_check import detect as detect_infra_error
 from core.reviewer import review
 from core.security import scan as security_scan
 from core.evaluation import score as evaluate, format_scorecard
+from core.documentation_agent import generate_readme
+from core.devops_agent import generate_ci_workflow
 from tools.filesystem import write_file, reset_workspace
 from tools.sandbox import run_in_sandbox
 from tools.test_runner import run_tests
@@ -52,8 +56,10 @@ def build(user_request: str) -> dict:
     print("\n--- Coder: writing files ---")
     for task in tasks:
         if task["type"] == "create_file":
-            print(f"  writing {task['path']} ...")
-            content = write_code(
+            role = classify_file(task["path"])
+            print(f"  writing {task['path']} ... ({role})")
+            write_fn = write_frontend_code if role == "frontend" else write_backend_code
+            content = write_fn(
                 project_goal=user_request,
                 file_path=task["path"],
                 purpose=task.get("purpose", ""),
@@ -68,6 +74,11 @@ def build(user_request: str) -> dict:
         write_file("schema.sql", schema)
         written_files["schema.sql"] = schema
         print("  wrote schema.sql")
+
+    print("\n--- DevOps Agent: generating CI workflow ---")
+    ci_workflow = generate_ci_workflow(architecture)
+    write_file(".github/workflows/ci.yml", ci_workflow)
+    print("  wrote .github/workflows/ci.yml")
 
     git_tool.commit("Initial implementation")
 
@@ -124,6 +135,7 @@ def build(user_request: str) -> dict:
         # patch makes things worse than before (regression protection).
         pre_patch_files = dict(written_files)
         pre_patch_failures = test_result.get("failed_count", 0) + test_result.get("error_count", 0)
+        pre_patch_total = pre_patch_failures + test_result.get("passed_count", 0)
 
         for path, content in patches.items():
             print(f"  patching {path} ...")
@@ -134,7 +146,14 @@ def build(user_request: str) -> dict:
         new_test_result = run_tests()
         new_failures = new_test_result.get("failed_count", 0) + new_test_result.get("error_count", 0)
 
-        if not new_test_result["passed"] and new_failures > pre_patch_failures:
+        # Only treat this as a regression if we have a REAL baseline to
+        # compare against. If pytest never even ran before (a collection
+        # error like "No module named pytest" -- 0 passed AND 0 failed,
+        # not because everything passed but because nothing could run),
+        # there's nothing valid to protect: any outcome is progress.
+        has_valid_baseline = pre_patch_total > 0
+
+        if has_valid_baseline and not new_test_result["passed"] and new_failures > pre_patch_failures:
             print(f"  REGRESSION: failures went from {pre_patch_failures} to {new_failures} -- rejecting patch")
             # Revert files on disk to the pre-patch snapshot.
             for path, content in pre_patch_files.items():
@@ -171,9 +190,6 @@ def build(user_request: str) -> dict:
         print(f"  Reviewer could not complete: {e}")
         review_result = {"approved": None, "issues": [], "error": str(e)}
 
-    git_tool.commit("Security scan + review complete")
-    checkpoint_log = git_tool.log()
-
     report = {
         "request": user_request,
         "requirements_spec": requirements_spec,
@@ -188,11 +204,19 @@ def build(user_request: str) -> dict:
         "infra_error": infra_error,
         "security_result": security_result,
         "review_result": review_result,
-        "checkpoint_log": checkpoint_log,
     }
 
     scores = evaluate(report)
     report["scores"] = scores
+
+    print("\n--- Documentation Agent: generating README ---")
+    readme_content = generate_readme(report)
+    write_file("README.md", readme_content)
+    print("  wrote README.md")
+
+    git_tool.commit("Security scan + review complete + documentation")
+    checkpoint_log = git_tool.log()
+    report["checkpoint_log"] = checkpoint_log
 
     print("\n=== BUILD SUMMARY ===")
     print(f"Files written : {len(written_files)}")

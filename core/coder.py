@@ -1,25 +1,25 @@
 """
-Coder agent.
+Backend Engineer agent.
 Given one create_file task (and the overall project goal for context),
-generates the actual file content.
+generates backend code: routes, business logic, models, config,
+scripts, tests.
 """
-
 from core.llm import call_claude
 
-CODER_SYSTEM_PROMPT = """You are the Coder agent inside AURA, an autonomous \
+BACKEND_SYSTEM_PROMPT = """You are the Backend Engineer agent inside AURA, an autonomous \
 software engineering system.
 
-You will be given the overall project goal and ONE specific file to write.
+You will be given the overall project goal and ONE specific backend file to write.
 
 Rules:
 - Output ONLY the raw file content. No markdown fences, no explanation, no preamble.
 - Code must be complete and runnable, not a sketch or placeholder.
-- Keep it simple and correct — this is an MVP.
+- Keep it simple and correct -- this is an MVP.
 - If writing a test file, use pytest and make sure imports match the actual file names.
 """
 
 
-def write_code(project_goal: str, file_path: str, purpose: str, existing_files: dict) -> str:
+def write_backend_code(project_goal: str, file_path: str, purpose: str, existing_files: dict) -> str:
     context_lines = []
     for path, content in existing_files.items():
         context_lines.append(f"--- {path} ---\n{content}")
@@ -36,11 +36,14 @@ Files already written in this project (for context/consistency):
 Write the complete content of {file_path} now."""
 
     response_text = call_claude(
-        system=CODER_SYSTEM_PROMPT,
+        system=BACKEND_SYSTEM_PROMPT,
         user_message=user_message,
     )
-    # Strip accidental markdown fences if the model adds them anyway
-    cleaned = response_text.strip()
+    return _strip_markdown_fences(response_text)
+
+
+def _strip_markdown_fences(text: str) -> str:
+    cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
         lines = lines[1:] if lines[0].startswith("```") else lines
@@ -48,3 +51,7 @@ Write the complete content of {file_path} now."""
             lines = lines[:-1]
         cleaned = "\n".join(lines)
     return cleaned
+
+
+# Backward-compatible alias -- older code/tools may still import write_code.
+write_code = write_backend_code
