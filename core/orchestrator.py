@@ -83,6 +83,7 @@ def build(user_request: str) -> dict:
     print(f"  {test_result['raw_output'][:800]}")
 
     debug_attempts = 0
+    patches_rejected = 0
     debug_log = []
     while not test_result["passed"] and debug_attempts < MAX_DEBUG_ATTEMPTS:
         debug_attempts += 1
@@ -95,14 +96,38 @@ def build(user_request: str) -> dict:
             break
         print(f"  root cause: {diagnosis.get('root_cause')}")
         patches = diagnosis.get("patches", {})
+
+        # Snapshot before applying the patch so we can roll back if the
+        # patch makes things worse than before (regression protection).
+        pre_patch_files = dict(written_files)
+        pre_patch_failures = test_result.get("failed_count", 0) + test_result.get("error_count", 0)
+
         for path, content in patches.items():
             print(f"  patching {path} ...")
             write_file(path, content)
             written_files[path] = content
-        debug_log.append(diagnosis)
 
         print("--- Tester: re-running pytest (sandboxed) ---")
-        test_result = run_tests()
+        new_test_result = run_tests()
+        new_failures = new_test_result.get("failed_count", 0) + new_test_result.get("error_count", 0)
+
+        if not new_test_result["passed"] and new_failures > pre_patch_failures:
+            print(f"  REGRESSION: failures went from {pre_patch_failures} to {new_failures} -- rejecting patch")
+            # Revert files on disk to the pre-patch snapshot.
+            for path, content in pre_patch_files.items():
+                write_file(path, content)
+            written_files.clear()
+            written_files.update(pre_patch_files)
+            diagnosis["rejected"] = True
+            diagnosis["rejection_reason"] = f"regression: failures {pre_patch_failures} -> {new_failures}"
+            debug_log.append(diagnosis)
+            patches_rejected += 1
+            print("  tests: FAILED (patch rejected, reverted to previous state)")
+            continue
+
+        diagnosis["rejected"] = False
+        debug_log.append(diagnosis)
+        test_result = new_test_result
         status = "PASSED" if test_result["passed"] else "FAILED"
         print(f"  tests: {status}")
 
@@ -129,6 +154,7 @@ def build(user_request: str) -> dict:
         "command_results": command_results,
         "test_result": test_result,
         "debug_attempts": debug_attempts,
+        "patches_rejected": patches_rejected,
         "debug_log": debug_log,
         "security_result": security_result,
         "review_result": review_result,
@@ -137,7 +163,7 @@ def build(user_request: str) -> dict:
     print("\n=== BUILD SUMMARY ===")
     print(f"Files written : {len(written_files)}")
     print(f"Tests         : {status}")
-    print(f"Debug attempts: {debug_attempts}")
+    print(f"Debug attempts: {debug_attempts} ({patches_rejected} rejected as regressions)")
     print(f"Security      : {'PASS' if security_result['passed'] else 'ISSUES'}")
     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
     print("======================\n")
