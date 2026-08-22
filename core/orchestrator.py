@@ -28,7 +28,9 @@ def build(user_request: str) -> dict:
     reset_workspace()
     git_tool.ensure_repo()
 
-    print("--- Architect: deciding approach ---")
+    from core.requirements_agent import analyze_requirements, print_requirements
+    requirements_spec = analyze_requirements(user_request)
+    print_requirements(requirements_spec)
     architecture = architect_design(user_request)
     print(f"  stack: {architecture.get('stack')}")
     print(f"  needs_database: {architecture.get('needs_database')}")
