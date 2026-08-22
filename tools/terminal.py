@@ -7,6 +7,7 @@ untrusted string concatenation elsewhere in the codebase).
 import subprocess
 import sys
 from tools.filesystem import WORKSPACE_DIR
+from tools.permissions import check as permission_check
 
 DEFAULT_TIMEOUT = 60  # seconds
 
@@ -17,6 +18,16 @@ def run_command(command: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     Returns dict with stdout, stderr, and exit code.
     """
     command = command.strip()
+
+    permission = permission_check(command)
+    if not permission["allowed"]:
+        return {
+            "command": command,
+            "stdout": "",
+            "stderr": f"BLOCKED by permission guard: {permission['reason']}",
+            "exit_code": -1,
+        }
+
     if command.startswith("pip "):
         command = f'"{sys.executable}" -m pip ' + command[len("pip "):]
     elif command.startswith("pytest"):

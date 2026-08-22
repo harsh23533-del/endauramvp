@@ -1,10 +1,11 @@
 """
-Orchestrator -- Phase 2.
+Orchestrator -- Phase 3.
 Loop:
-  Architect -> Plan -> Code -> (DB schema if needed) -> Write to disk ->
+  Requirements -> Architect -> Plan -> Code (backend/frontend split) ->
+  DevOps (CI) -> (DB schema if needed) -> Write to disk ->
   Run commands (sandboxed) -> Run tests (sandboxed) ->
-  [FAIL -> Debugger loop -> retest] ->
-  Security scan -> Reviewer -> Report
+  [FAIL -> infra-check -> Debugger loop w/ regression protection -> retest] ->
+  Security scan -> Reviewer -> Critic -> Documentation -> Report
 """
 from core.architect import design as architect_design
 from core.planner import plan
@@ -15,10 +16,12 @@ from core.db_agent import design_schema
 from core.debugger import debug
 from core.infra_check import detect as detect_infra_error
 from core.reviewer import review
+from core.critic import critique
 from core.security import scan as security_scan
 from core.evaluation import score as evaluate, format_scorecard
 from core.documentation_agent import generate_readme
 from core.devops_agent import generate_ci_workflow
+from core.event_log import log_event
 from tools.filesystem import write_file, reset_workspace
 from tools.sandbox import run_in_sandbox
 from tools.test_runner import run_tests
@@ -37,17 +40,21 @@ def build(user_request: str) -> dict:
     requirements_spec = analyze_requirements(user_request)
     print_requirements(requirements_spec)
     write_file("requirements.md", format_spec(requirements_spec))
+    fr_count = len(requirements_spec.get("functional_requirements", []))
+    log_event("requirements", "completed", f"{fr_count} functional requirements")
 
     architecture = architect_design(user_request)
     print(f"  stack: {architecture.get('stack')}")
     print(f"  needs_database: {architecture.get('needs_database')}")
     print(f"  notes: {architecture.get('notes')}")
+    log_event("architect", "completed", str(architecture.get("stack")))
 
     print("\n--- Planner: creating task list ---")
     task_plan = plan(user_request, architecture=architecture, requirements=requirements_spec)
     tasks = task_plan["tasks"]
     for t in tasks:
         print(f"  - {t}")
+    log_event("planner", "completed", f"{len(tasks)} tasks")
 
     planned_file_count = sum(1 for t in tasks if t["type"] == "create_file")
 
@@ -67,6 +74,7 @@ def build(user_request: str) -> dict:
             )
             write_file(task["path"], content)
             written_files[task["path"]] = content
+    log_event("coder", "completed", f"{len(written_files)} files written")
 
     if architecture.get("needs_database"):
         print("\n--- Database Agent: designing schema ---")
@@ -74,11 +82,13 @@ def build(user_request: str) -> dict:
         write_file("schema.sql", schema)
         written_files["schema.sql"] = schema
         print("  wrote schema.sql")
+        log_event("database", "completed", "schema.sql written")
 
     print("\n--- DevOps Agent: generating CI workflow ---")
     ci_workflow = generate_ci_workflow(architecture)
     write_file(".github/workflows/ci.yml", ci_workflow)
     print("  wrote .github/workflows/ci.yml")
+    log_event("devops", "completed", "ci.yml written")
 
     git_tool.commit("Initial implementation")
 
@@ -105,6 +115,7 @@ def build(user_request: str) -> dict:
     status = "PASSED" if test_result["passed"] else "FAILED"
     print(f"  tests: {status}")
     print(f"  {test_result['raw_output'][:800]}")
+    log_event("tester", "completed" if test_result["passed"] else "failed", status)
 
     debug_attempts = 0
     patches_rejected = 0
@@ -118,6 +129,7 @@ def build(user_request: str) -> dict:
             print(f"  {infra_error}")
             print("  Skipping the Debugger -- no code patch can fix this.")
             print("  Fix your environment and re-run the build.")
+            log_event("debugger", "skipped", f"infra issue: {infra_error}")
 
     while not test_result["passed"] and not infra_error and debug_attempts < MAX_DEBUG_ATTEMPTS:
         debug_attempts += 1
@@ -127,6 +139,7 @@ def build(user_request: str) -> dict:
         except RuntimeError as e:
             print(f"  Debugger could not produce a diagnosis: {e}")
             print("  Stopping debug loop -- see BUILD SUMMARY for current state.")
+            log_event("debugger", "failed", str(e)[:150])
             break
         print(f"  root cause: {diagnosis.get('root_cause')}")
         patches = diagnosis.get("patches", {})
@@ -165,6 +178,7 @@ def build(user_request: str) -> dict:
             debug_log.append(diagnosis)
             patches_rejected += 1
             print("  tests: FAILED (patch rejected, reverted to previous state)")
+            log_event("debugger", "failed", "patch rejected (regression)")
             continue
 
         diagnosis["rejected"] = False
@@ -172,6 +186,7 @@ def build(user_request: str) -> dict:
         test_result = new_test_result
         status = "PASSED" if test_result["passed"] else "FAILED"
         print(f"  tests: {status}")
+        log_event("debugger", "completed", diagnosis.get("root_cause", "")[:150])
         git_tool.commit(f"Fix: {diagnosis.get('root_cause', 'debugger patch')[:70]}")
 
     print("\n--- Security: scanning files ---")
@@ -179,6 +194,7 @@ def build(user_request: str) -> dict:
     print(f"  security: {'PASS' if security_result['passed'] else 'ISSUES FOUND'}")
     for finding in security_result["findings"]:
         print(f"    [{finding['file']}:{finding['line']}] {finding['issue']}")
+    log_event("security", "completed", "PASS" if security_result["passed"] else f"{len(security_result['findings'])} issues")
 
     print("\n--- Reviewer: reviewing code ---")
     try:
@@ -186,9 +202,23 @@ def build(user_request: str) -> dict:
         print(f"  review: {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
         for issue in review_result.get("issues", []):
             print(f"    [{issue.get('severity')}] {issue.get('file')}: {issue.get('note')}")
+        log_event("reviewer", "completed", "APPROVED" if review_result.get("approved") else "CHANGES REQUESTED")
     except RuntimeError as e:
         print(f"  Reviewer could not complete: {e}")
         review_result = {"approved": None, "issues": [], "error": str(e)}
+        log_event("reviewer", "failed", str(e)[:150])
+
+    print("\n--- Critic: looking for ways this breaks ---")
+    try:
+        critic_result = critique(written_files)
+        print(f"  verdict: {critic_result.get('verdict')}")
+        for b in critic_result.get("breaks_found", []):
+            print(f"    [{b.get('file')}] {b.get('scenario')} -> {b.get('consequence')}")
+        log_event("critic", "completed", critic_result.get("verdict", "unknown"))
+    except RuntimeError as e:
+        print(f"  Critic could not complete: {e}")
+        critic_result = {"breaks_found": [], "verdict": "unknown", "error": str(e)}
+        log_event("critic", "failed", str(e)[:150])
 
     report = {
         "request": user_request,
@@ -204,6 +234,7 @@ def build(user_request: str) -> dict:
         "infra_error": infra_error,
         "security_result": security_result,
         "review_result": review_result,
+        "critic_result": critic_result,
     }
 
     scores = evaluate(report)
@@ -213,8 +244,9 @@ def build(user_request: str) -> dict:
     readme_content = generate_readme(report)
     write_file("README.md", readme_content)
     print("  wrote README.md")
+    log_event("documentation", "completed", "README.md written")
 
-    git_tool.commit("Security scan + review complete + documentation")
+    git_tool.commit("Security scan + review + critic complete + documentation")
     checkpoint_log = git_tool.log()
     report["checkpoint_log"] = checkpoint_log
 
@@ -226,6 +258,7 @@ def build(user_request: str) -> dict:
     print(f"Debug attempts: {debug_attempts} ({patches_rejected} rejected as regressions)")
     print(f"Security      : {'PASS' if security_result['passed'] else 'ISSUES'}")
     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
+    print(f"Critic        : {critic_result.get('verdict', 'unknown')}")
     print("======================\n")
     print(format_scorecard(scores))
     print()
@@ -233,5 +266,6 @@ def build(user_request: str) -> dict:
     print(checkpoint_log)
     print("To roll back: cd workspace, then git reset --hard <commit-hash>")
     print("==========================================================\n")
+    print("Full event trace: workspace/build-events.jsonl")
 
     return report
