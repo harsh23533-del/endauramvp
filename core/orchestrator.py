@@ -14,7 +14,7 @@ from core.debugger import debug
 from core.reviewer import review
 from core.security import scan as security_scan
 from core.evaluation import score as evaluate, format_scorecard
-from tools.filesystem import write_file, ensure_workspace
+from tools.filesystem import write_file, reset_workspace
 from tools.sandbox import run_in_sandbox
 from tools.test_runner import run_tests
 from tools import git_tool
@@ -24,7 +24,8 @@ MAX_DEBUG_ATTEMPTS = 3
 
 def build(user_request: str) -> dict:
     print(f"\n=== AURA: received request ===\n{user_request}\n")
-    ensure_workspace()
+    print("Resetting workspace (starting from a clean slate)...")
+    reset_workspace()
     git_tool.ensure_repo()
 
     print("--- Architect: deciding approach ---")
