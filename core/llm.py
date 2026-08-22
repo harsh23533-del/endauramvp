@@ -1,13 +1,20 @@
 """
-Single place where AURA talks to the LLM.
-Using OpenRouter's free-tier router (same pattern as processbot) so this
-can be tested with zero cost.
+Single place where AURA talks to an LLM, via OpenRouter
+(OpenAI-compatible API). Keeping this isolated means Planner/Coder
+agents don't each duplicate API setup, and you can swap models in
+one spot (or via .env, without touching code).
 """
+
 import os
-import time
 from openai import OpenAI
 
-MODEL = "openrouter/free"
+# Default free model. OpenRouter's free-tier lineup changes over time --
+# if this one stops working, either:
+#   1) set OPENROUTER_MODEL in your .env to a different ":free" model
+#      from https://openrouter.ai/models?max_price=0, or
+#   2) change the default below.
+DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+
 _client = None
 
 
@@ -17,8 +24,7 @@ def _get_client() -> OpenAI:
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "OPENROUTER_API_KEY is not set. Add it to your .env file. "
-                "Get a free key at https://openrouter.ai/keys"
+                "OPENROUTER_API_KEY is not set. Add it to your .env file."
             )
         _client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
@@ -27,29 +33,24 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def _clean_reply(text: str) -> str:
-    return text.strip()
-
-
-def call_claude(system: str, user_message: str, max_tokens: int = 4000, max_retries: int = 2) -> str:
+def call_claude(system: str, user_message: str, max_tokens: int = 4000) -> str:
     client = _get_client()
-    last_error = None
-    for attempt in range(max_retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-            content = response.choices[0].message.content
-            if content and content.strip():
-                return _clean_reply(content)
-            last_error = RuntimeError("Empty response from model")
-        except Exception as e:
-            last_error = e
-        if attempt < max_retries:
-            time.sleep(1.5)
-    raise RuntimeError(f"OpenRouter call failed after {max_retries + 1} attempts: {last_error}")
+    model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
+
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_message},
+        ],
+    )
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError(
+            f"OpenRouter returned an empty response (model: {model}). "
+            "It may be rate-limited or unavailable -- try again in a "
+            "minute, or set OPENROUTER_MODEL in .env to a different "
+            "free model from https://openrouter.ai/models?max_price=0"
+        )
+    return content
