@@ -90,3 +90,25 @@ def print_requirements(spec: dict) -> None:
         for nfr in spec["non_functional_requirements"]:
             print(f"  {nfr['id']}: {nfr['description']}")
     print()
+
+
+def format_spec(spec: dict) -> str:
+    """Render the spec as a Markdown document to save into workspace/."""
+    lines = ["# Requirements Specification\n"]
+
+    lines.append("## Functional Requirements")
+    for fr in spec.get("functional_requirements", []):
+        lines.append(f"- {fr.get('id')}: {fr.get('description')}")
+
+    lines.append("\n## Non-Functional Requirements")
+    for nfr in spec.get("non_functional_requirements", []):
+        lines.append(f"- {nfr.get('id')}: {nfr.get('description')}")
+
+    lines.append("\n## Acceptance Criteria")
+    for ac in spec.get("acceptance_criteria", []):
+        lines.append(
+            f"- {ac.get('id')} ({ac.get('requirement_id')}): "
+            f"Given {ac.get('given')}, When {ac.get('when')}, Then {ac.get('then')}"
+        )
+
+    return "\n".join(lines)

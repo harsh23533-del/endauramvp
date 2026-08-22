@@ -20,6 +20,8 @@ Rules:
 - Always include a final "run_command" task that runs "pip install -r requirements.txt" \
 if any third-party package is needed.
 - If given an Architect's decision, follow the chosen stack.
+- If given a requirements specification, make sure your tasks cover every \
+functional requirement listed -- don't drop scope the Requirements Analyst identified.
 
 Respond ONLY with valid JSON, no markdown fences, no preamble. Format:
 {
@@ -33,10 +35,15 @@ Respond ONLY with valid JSON, no markdown fences, no preamble. Format:
 """
 
 
-def plan(user_request: str, architecture: dict | None = None) -> dict:
+def plan(user_request: str, architecture: dict | None = None, requirements: dict | None = None) -> dict:
     context = ""
     if architecture:
-        context = f"\n\nArchitect's decision: {json.dumps(architecture)}"
+        context += f"\n\nArchitect's decision: {json.dumps(architecture)}"
+    if requirements:
+        frs = requirements.get("functional_requirements", [])
+        if frs:
+            fr_lines = "\n".join(f"- {fr.get('id')}: {fr.get('description')}" for fr in frs)
+            context += f"\n\nFunctional requirements to cover:\n{fr_lines}"
 
     return call_claude_json(
         system=PLANNER_SYSTEM_PROMPT,

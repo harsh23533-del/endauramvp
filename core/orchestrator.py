@@ -11,6 +11,7 @@ from core.planner import plan
 from core.coder import write_code
 from core.db_agent import design_schema
 from core.debugger import debug
+from core.infra_check import detect as detect_infra_error
 from core.reviewer import review
 from core.security import scan as security_scan
 from core.evaluation import score as evaluate, format_scorecard
@@ -28,16 +29,18 @@ def build(user_request: str) -> dict:
     reset_workspace()
     git_tool.ensure_repo()
 
-    from core.requirements_agent import analyze_requirements, print_requirements
+    from core.requirements_agent import analyze_requirements, print_requirements, format_spec
     requirements_spec = analyze_requirements(user_request)
     print_requirements(requirements_spec)
+    write_file("requirements.md", format_spec(requirements_spec))
+
     architecture = architect_design(user_request)
     print(f"  stack: {architecture.get('stack')}")
     print(f"  needs_database: {architecture.get('needs_database')}")
     print(f"  notes: {architecture.get('notes')}")
 
     print("\n--- Planner: creating task list ---")
-    task_plan = plan(user_request, architecture=architecture)
+    task_plan = plan(user_request, architecture=architecture, requirements=requirements_spec)
     tasks = task_plan["tasks"]
     for t in tasks:
         print(f"  - {t}")
@@ -95,7 +98,17 @@ def build(user_request: str) -> dict:
     debug_attempts = 0
     patches_rejected = 0
     debug_log = []
-    while not test_result["passed"] and debug_attempts < MAX_DEBUG_ATTEMPTS:
+    infra_error = None
+
+    if not test_result["passed"]:
+        infra_error = detect_infra_error(test_result["raw_output"])
+        if infra_error:
+            print(f"\n--- INFRASTRUCTURE ISSUE DETECTED (not a code bug) ---")
+            print(f"  {infra_error}")
+            print("  Skipping the Debugger -- no code patch can fix this.")
+            print("  Fix your environment and re-run the build.")
+
+    while not test_result["passed"] and not infra_error and debug_attempts < MAX_DEBUG_ATTEMPTS:
         debug_attempts += 1
         print(f"\n--- Debugger: attempt {debug_attempts} ---")
         try:
@@ -163,6 +176,7 @@ def build(user_request: str) -> dict:
 
     report = {
         "request": user_request,
+        "requirements_spec": requirements_spec,
         "architecture": architecture,
         "files_written": list(written_files.keys()),
         "planned_file_count": planned_file_count,
@@ -171,6 +185,7 @@ def build(user_request: str) -> dict:
         "debug_attempts": debug_attempts,
         "patches_rejected": patches_rejected,
         "debug_log": debug_log,
+        "infra_error": infra_error,
         "security_result": security_result,
         "review_result": review_result,
         "checkpoint_log": checkpoint_log,
@@ -182,6 +197,8 @@ def build(user_request: str) -> dict:
     print("\n=== BUILD SUMMARY ===")
     print(f"Files written : {len(written_files)}")
     print(f"Tests         : {status}")
+    if infra_error:
+        print(f"Infra issue   : {infra_error} (fix your environment, then re-run)")
     print(f"Debug attempts: {debug_attempts} ({patches_rejected} rejected as regressions)")
     print(f"Security      : {'PASS' if security_result['passed'] else 'ISSUES'}")
     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
