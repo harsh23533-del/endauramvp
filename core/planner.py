@@ -4,7 +4,7 @@ Converts the user's natural-language request into a short, concrete
 list of build tasks (files to create, commands to run).
 """
 import json
-from core.llm import call_claude
+from core.llm import call_claude_json
 
 PLANNER_SYSTEM_PROMPT = """You are the Planner agent inside AURA, an autonomous \
 software engineering system.
@@ -38,11 +38,7 @@ def plan(user_request: str, architecture: dict | None = None) -> dict:
     if architecture:
         context = f"\n\nArchitect's decision: {json.dumps(architecture)}"
 
-    response_text = call_claude(
+    return call_claude_json(
         system=PLANNER_SYSTEM_PROMPT,
         user_message=user_request + context,
     )
-    cleaned = response_text.strip().strip("```").strip()
-    if cleaned.startswith("json"):
-        cleaned = cleaned[4:].strip()
-    return json.loads(cleaned)

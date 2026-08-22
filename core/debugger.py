@@ -2,8 +2,7 @@
 Debugger agent.
 Given a test failure, analyzes root cause and produces patched files.
 """
-import json
-from core.llm import call_claude
+from core.llm import call_claude_json
 
 DEBUGGER_SYSTEM_PROMPT = """You are the Debugger agent inside AURA, an autonomous \
 software engineering system.
@@ -42,12 +41,8 @@ Failed test output:
 
 Diagnose the root cause and provide patches."""
 
-    response_text = call_claude(
+    return call_claude_json(
         system=DEBUGGER_SYSTEM_PROMPT,
         user_message=user_message,
         max_tokens=6000,
     )
-    cleaned = response_text.strip().strip("```").strip()
-    if cleaned.startswith("json"):
-        cleaned = cleaned[4:].strip()
-    return json.loads(cleaned)

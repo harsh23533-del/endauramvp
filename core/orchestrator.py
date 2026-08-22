@@ -62,6 +62,13 @@ def build(user_request: str) -> dict:
     command_results = []
     for task in tasks:
         if task["type"] == "run_command":
+            # Skip pip install here -- the test runner installs
+            # requirements.txt itself inside the SAME container that
+            # runs pytest, since each sandbox run is a fresh throwaway
+            # container and installed packages wouldn't carry over.
+            if "pip install" in task["command"] and "requirements.txt" in task["command"]:
+                print(f"  skipping (handled by test runner): {task['command']}")
+                continue
             print(f"  running: {task['command']}")
             result = run_in_sandbox(task["command"])
             command_results.append(result)
@@ -69,7 +76,7 @@ def build(user_request: str) -> dict:
                 print(f"    WARNING: exit code {result['exit_code']}")
                 print(f"    stderr: {result['stderr'][:300]}")
 
-    print("\n--- Tester: running pytest (sandboxed) ---")
+    print("\n--- Tester: installing deps + running pytest (sandboxed) ---")
     test_result = run_tests()
     status = "PASSED" if test_result["passed"] else "FAILED"
     print(f"  tests: {status}")
@@ -80,7 +87,12 @@ def build(user_request: str) -> dict:
     while not test_result["passed"] and debug_attempts < MAX_DEBUG_ATTEMPTS:
         debug_attempts += 1
         print(f"\n--- Debugger: attempt {debug_attempts} ---")
-        diagnosis = debug(user_request, written_files, test_result["raw_output"])
+        try:
+            diagnosis = debug(user_request, written_files, test_result["raw_output"])
+        except RuntimeError as e:
+            print(f"  Debugger could not produce a diagnosis: {e}")
+            print("  Stopping debug loop -- see BUILD SUMMARY for current state.")
+            break
         print(f"  root cause: {diagnosis.get('root_cause')}")
         patches = diagnosis.get("patches", {})
         for path, content in patches.items():
@@ -101,10 +113,14 @@ def build(user_request: str) -> dict:
         print(f"    [{finding['file']}:{finding['line']}] {finding['issue']}")
 
     print("\n--- Reviewer: reviewing code ---")
-    review_result = review(written_files)
-    print(f"  review: {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
-    for issue in review_result.get("issues", []):
-        print(f"    [{issue.get('severity')}] {issue.get('file')}: {issue.get('note')}")
+    try:
+        review_result = review(written_files)
+        print(f"  review: {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
+        for issue in review_result.get("issues", []):
+            print(f"    [{issue.get('severity')}] {issue.get('file')}: {issue.get('note')}")
+    except RuntimeError as e:
+        print(f"  Reviewer could not complete: {e}")
+        review_result = {"approved": None, "issues": [], "error": str(e)}
 
     report = {
         "request": user_request,
