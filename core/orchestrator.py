@@ -13,6 +13,7 @@ from core.db_agent import design_schema
 from core.debugger import debug
 from core.reviewer import review
 from core.security import scan as security_scan
+from core.evaluation import score as evaluate, format_scorecard
 from tools.filesystem import write_file, ensure_workspace
 from tools.sandbox import run_in_sandbox
 from tools.test_runner import run_tests
@@ -37,6 +38,8 @@ def build(user_request: str) -> dict:
     tasks = task_plan["tasks"]
     for t in tasks:
         print(f"  - {t}")
+
+    planned_file_count = sum(1 for t in tasks if t["type"] == "create_file")
 
     written_files = {}
 
@@ -159,6 +162,7 @@ def build(user_request: str) -> dict:
         "request": user_request,
         "architecture": architecture,
         "files_written": list(written_files.keys()),
+        "planned_file_count": planned_file_count,
         "command_results": command_results,
         "test_result": test_result,
         "debug_attempts": debug_attempts,
@@ -169,6 +173,9 @@ def build(user_request: str) -> dict:
         "checkpoint_log": checkpoint_log,
     }
 
+    scores = evaluate(report)
+    report["scores"] = scores
+
     print("\n=== BUILD SUMMARY ===")
     print(f"Files written : {len(written_files)}")
     print(f"Tests         : {status}")
@@ -176,6 +183,8 @@ def build(user_request: str) -> dict:
     print(f"Security      : {'PASS' if security_result['passed'] else 'ISSUES'}")
     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
     print("======================\n")
+    print(format_scorecard(scores))
+    print()
     print("=== CHECKPOINTS (workspace/ has its own git history) ===")
     print(checkpoint_log)
     print("To roll back: cd workspace, then git reset --hard <commit-hash>")
