@@ -37,13 +37,23 @@ def build(user_request: str) -> dict:
     git_tool.ensure_repo()
 
     from core.requirements_agent import analyze_requirements, print_requirements, format_spec
+    from core.product_manager import build_plan, print_plan
+    from core.performance_agent import scan as performance_scan, print_performance
+    from core.project_memory import load_memory, save_memory, print_memory_context
+    from core.episodic_memory import log_episode, print_recent_episodes
+    _memory = load_memory()
+    print_memory_context(_memory)
+    print_recent_episodes()
     requirements_spec = analyze_requirements(user_request)
     print_requirements(requirements_spec)
+    product_plan = build_plan(requirements_spec)
+    print_plan(product_plan)
     write_file("requirements.md", format_spec(requirements_spec))
     fr_count = len(requirements_spec.get("functional_requirements", []))
     log_event("requirements", "completed", f"{fr_count} functional requirements")
 
     architecture = architect_design(user_request)
+    save_memory(user_request, architecture)
     print(f"  stack: {architecture.get('stack')}")
     print(f"  needs_database: {architecture.get('needs_database')}")
     print(f"  notes: {architecture.get('notes')}")
@@ -136,6 +146,7 @@ def build(user_request: str) -> dict:
         print(f"\n--- Debugger: attempt {debug_attempts} ---")
         try:
             diagnosis = debug(user_request, written_files, test_result["raw_output"])
+            log_episode(user_request, diagnosis.get('root_cause', 'unknown'), diagnosis.get('fix_summary', diagnosis.get('description', 'patch applied')))
         except RuntimeError as e:
             print(f"  Debugger could not produce a diagnosis: {e}")
             print("  Stopping debug loop -- see BUILD SUMMARY for current state.")
@@ -191,6 +202,8 @@ def build(user_request: str) -> dict:
 
     print("\n--- Security: scanning files ---")
     security_result = security_scan(written_files)
+    performance_result = performance_scan(written_files)
+    print_performance(performance_result)
     print(f"  security: {'PASS' if security_result['passed'] else 'ISSUES FOUND'}")
     for finding in security_result["findings"]:
         print(f"    [{finding['file']}:{finding['line']}] {finding['issue']}")

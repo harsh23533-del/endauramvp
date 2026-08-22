@@ -1,0 +1,18 @@
+{
+  "architecture": {
+    "stack": {
+      "language": "python",
+      "framework": "flask"
+    },
+    "needs_database": false,
+    "notes": "A simple Flask app with a single route is sufficient for a /hello endpoint; no persistence is required."
+  },
+  "stack": {
+    "language": "python",
+    "framework": "flask"
+  },
+  "conventions": [],
+  "past_requests": [
+    "Make me a Flask API with a /hello endpoint"
+  ]
+}

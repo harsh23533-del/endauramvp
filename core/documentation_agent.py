@@ -63,6 +63,23 @@ def generate_readme(report: dict) -> str:
         lines.append(f"- Code Quality: {scores['code_quality']}%")
         lines.append(f"- **Overall: {scores['overall']}%**\n")
 
+    gate = report.get("release_gate")
+    if gate:
+        lines.append("## Release Gate\n")
+        lines.append(f"**{gate['status']}**\n")
+        for reason in gate.get("reasons", []):
+            lines.append(f"- {reason}")
+        lines.append("")
+
+    trace = report.get("traceability")
+    if trace:
+        lines.append("## Requirement Traceability\n")
+        lines.append("| ID | File | Status |")
+        lines.append("|---|---|---|")
+        for t in trace:
+            lines.append(f"| {t['requirement_id']} | {t['file'] or '-'} | {t['status']} |")
+        lines.append("")
+
     security_result = report.get("security_result", {})
     findings = security_result.get("findings", [])
     if findings:
