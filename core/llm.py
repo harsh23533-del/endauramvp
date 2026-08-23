@@ -14,6 +14,7 @@ import os
 import re
 import time
 from openai import OpenAI
+from core import metrics
 
 # Default free model. OpenRouter's free-tier lineup changes over time --
 # if this one stops working, either:
@@ -71,9 +72,11 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
     """
     client = _get_client()
     last_error = None
+    call_id = metrics.new_call_id()
 
     for model in _model_chain():
         for attempt in range(retries + 1):
+            start = time.time()
             try:
                 response = client.chat.completions.create(
                     model=model,
@@ -83,11 +86,21 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
                         {"role": "user", "content": user_message},
                     ],
                 )
+                latency = time.time() - start
                 content = response.choices[0].message.content
+                usage = getattr(response, "usage", None)
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
                 if content and content.strip():
+                    metrics.record_attempt(call_id, model, attempt, latency, True,
+                                            prompt_tokens, completion_tokens)
                     return content
+                metrics.record_attempt(call_id, model, attempt, latency, False,
+                                        prompt_tokens, completion_tokens, error="empty response")
                 last_error = f"empty response (model: {model})"
             except Exception as e:
+                latency = time.time() - start
+                metrics.record_attempt(call_id, model, attempt, latency, False, error=str(e))
                 last_error = f"{model}: {e}"
                 if _is_rate_limit_or_unavailable(str(e)):
                     break  # don't waste retries on an exhausted/unavailable model

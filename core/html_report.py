@@ -19,6 +19,7 @@ def generate_html_report(report: dict) -> str:
     critic_result = report.get("critic_result", {})
     trace = report.get("traceability", [])
     gate = report.get("release_gate", {})
+    metrics = report.get("metrics", {})
 
     trace_rows = "".join(
         f"<tr><td>{_esc(t['requirement_id'])}</td><td>{_esc(t['description'])}</td>"
@@ -43,6 +44,13 @@ def generate_html_report(report: dict) -> str:
 
     gate_class = "ok" if gate.get("status") == "RELEASE_READY" else "blocked"
     gate_reasons = "".join(f"<li>{_esc(r)}</li>" for r in gate.get("reasons", []))
+
+    metrics_rows = "".join(
+        f"<tr><td>{_esc(model)}</td><td>{_esc(stats.get('attempts'))}</td>"
+        f"<td>{_esc(stats.get('successes'))}</td><td>{_esc(stats.get('failures'))}</td>"
+        f"<td>{_esc(stats.get('latency'))}s</td><td>{_esc(stats.get('tokens'))}</td></tr>"
+        for model, stats in metrics.get("by_model", {}).items()
+    )
 
     return f"""<!DOCTYPE html>
 <html>
@@ -81,6 +89,18 @@ def generate_html_report(report: dict) -> str:
   <h2>Release Gate</h2>
   <div class="gate {gate_class}">{_esc(gate.get('status'))}</div>
   <ul>{gate_reasons}</ul>
+
+  <h2>LLM Metrics</h2>
+  <div class="score-row">
+    <div class="score-item">{_esc(metrics.get('invocations', 0))}<br>Invocations</div>
+    <div class="score-item">{_esc(metrics.get('retries', 0))}<br>Retries/Fallbacks</div>
+    <div class="score-item">{_esc(metrics.get('total_latency', 0))}s<br>Total Latency</div>
+    <div class="score-item">{_esc(metrics.get('total_tokens', 0))}<br>Tokens</div>
+  </div>
+  <table>
+    <tr><th>Model</th><th>Attempts</th><th>OK</th><th>Failed</th><th>Latency</th><th>Tokens</th></tr>
+    {metrics_rows or "<tr><td colspan='6'>No LLM calls recorded</td></tr>"}
+  </table>
 
   <h2>Requirement Traceability</h2>
   <table>

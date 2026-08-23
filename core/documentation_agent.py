@@ -63,6 +63,14 @@ def generate_readme(report: dict) -> str:
         lines.append(f"- Code Quality: {scores['code_quality']}%")
         lines.append(f"- **Overall: {scores['overall']}%**\n")
 
+    metrics = report.get("metrics")
+    if metrics and metrics.get("invocations"):
+        lines.append("## Build Metrics\n")
+        lines.append(f"- LLM invocations: {metrics['invocations']} ({metrics['retries']} retries/fallbacks)")
+        lines.append(f"- Latency: {metrics['total_latency']}s total, {metrics['avg_latency']}s avg/attempt")
+        lines.append(f"- Tokens: {metrics['total_tokens']} ({metrics['prompt_tokens']} prompt / {metrics['completion_tokens']} completion)")
+        lines.append("- Cost: $0.00 (free-tier models only)\n")
+
     gate = report.get("release_gate")
     if gate:
         lines.append("## Release Gate\n")

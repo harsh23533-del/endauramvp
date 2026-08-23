@@ -27,6 +27,7 @@ from core.traceability import build_traceability, format_traceability
 from core.release_gate import evaluate_release, format_release_gate
 from core.html_report import generate_html_report
 from core.issue_agent import generate_issue_md
+from core import metrics
 from core.runtime_agent import check_runtime, format_runtime
 from core.state_machine import StateMachine
 from core.failure_clustering import cluster_failures, format_clusters
@@ -40,6 +41,7 @@ MAX_DEBUG_ATTEMPTS = 3
 
 def build(user_request: str, require_approval: bool = False) -> dict:
     print(f"\n=== AURA: received request ===\n{user_request}\n")
+    metrics.reset()
     print("Resetting workspace (starting from a clean slate)...")
     reset_workspace()
     git_tool.ensure_repo()
@@ -292,6 +294,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         "review_result": review_result,
         "critic_result": critic_result,
         "runtime_result": runtime_result,
+        "metrics": metrics.summary(),
     }
 
     failure_clusters = cluster_failures(debug_log)
@@ -364,8 +367,13 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     if human_approved is not None:
         print(f"Human Approval: {'APPROVED' if human_approved else 'NOT APPROVED'}")
     print(f"Git branch    : {build_branch}{' (merged to main)' if merged else ' (NOT merged -- still on this branch)'}")
+    metrics_result = report["metrics"]
+    print(f"LLM calls     : {metrics_result['invocations']} logical / {metrics_result['total_attempts']} attempts, "
+          f"{metrics_result['total_latency']}s, {metrics_result['total_tokens']} tokens")
     print("======================\n")
     print(format_scorecard(scores))
+    print()
+    print(metrics.format_metrics(metrics_result))
     print()
     print("=== CHECKPOINTS (workspace/ has its own git history) ===")
     print(checkpoint_log)

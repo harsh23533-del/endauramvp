@@ -1,0 +1,279 @@
+diff --git a/core/documentation_agent.py b/core/documentation_agent.py
+index 7fa1705..022fdba 100644
+--- a/core/documentation_agent.py
++++ b/core/documentation_agent.py
+@@ -63,6 +63,14 @@ def generate_readme(report: dict) -> str:
+         lines.append(f"- Code Quality: {scores['code_quality']}%")
+         lines.append(f"- **Overall: {scores['overall']}%**\n")
+ 
++    metrics = report.get("metrics")
++    if metrics and metrics.get("invocations"):
++        lines.append("## Build Metrics\n")
++        lines.append(f"- LLM invocations: {metrics['invocations']} ({metrics['retries']} retries/fallbacks)")
++        lines.append(f"- Latency: {metrics['total_latency']}s total, {metrics['avg_latency']}s avg/attempt")
++        lines.append(f"- Tokens: {metrics['total_tokens']} ({metrics['prompt_tokens']} prompt / {metrics['completion_tokens']} completion)")
++        lines.append("- Cost: $0.00 (free-tier models only)\n")
++
+     gate = report.get("release_gate")
+     if gate:
+         lines.append("## Release Gate\n")
+diff --git a/core/html_report.py b/core/html_report.py
+index 07ec150..48a0c80 100644
+--- a/core/html_report.py
++++ b/core/html_report.py
+@@ -19,6 +19,7 @@ def generate_html_report(report: dict) -> str:
+     critic_result = report.get("critic_result", {})
+     trace = report.get("traceability", [])
+     gate = report.get("release_gate", {})
++    metrics = report.get("metrics", {})
+ 
+     trace_rows = "".join(
+         f"<tr><td>{_esc(t['requirement_id'])}</td><td>{_esc(t['description'])}</td>"
+@@ -44,6 +45,13 @@ def generate_html_report(report: dict) -> str:
+     gate_class = "ok" if gate.get("status") == "RELEASE_READY" else "blocked"
+     gate_reasons = "".join(f"<li>{_esc(r)}</li>" for r in gate.get("reasons", []))
+ 
++    metrics_rows = "".join(
++        f"<tr><td>{_esc(model)}</td><td>{_esc(stats.get('attempts'))}</td>"
++        f"<td>{_esc(stats.get('successes'))}</td><td>{_esc(stats.get('failures'))}</td>"
++        f"<td>{_esc(stats.get('latency'))}s</td><td>{_esc(stats.get('tokens'))}</td></tr>"
++        for model, stats in metrics.get("by_model", {}).items()
++    )
++
+     return f"""<!DOCTYPE html>
+ <html>
+ <head>
+@@ -82,6 +90,18 @@ def generate_html_report(report: dict) -> str:
+   <div class="gate {gate_class}">{_esc(gate.get('status'))}</div>
+   <ul>{gate_reasons}</ul>
+ 
++  <h2>LLM Metrics</h2>
++  <div class="score-row">
++    <div class="score-item">{_esc(metrics.get('invocations', 0))}<br>Invocations</div>
++    <div class="score-item">{_esc(metrics.get('retries', 0))}<br>Retries/Fallbacks</div>
++    <div class="score-item">{_esc(metrics.get('total_latency', 0))}s<br>Total Latency</div>
++    <div class="score-item">{_esc(metrics.get('total_tokens', 0))}<br>Tokens</div>
++  </div>
++  <table>
++    <tr><th>Model</th><th>Attempts</th><th>OK</th><th>Failed</th><th>Latency</th><th>Tokens</th></tr>
++    {metrics_rows or "<tr><td colspan='6'>No LLM calls recorded</td></tr>"}
++  </table>
++
+   <h2>Requirement Traceability</h2>
+   <table>
+     <tr><th>ID</th><th>Description</th><th>File</th><th>Status</th></tr>
+diff --git a/core/llm.py b/core/llm.py
+index 4f6efa3..523bb2b 100644
+--- a/core/llm.py
++++ b/core/llm.py
+@@ -14,6 +14,7 @@ import os
+ import re
+ import time
+ from openai import OpenAI
++from core import metrics
+ 
+ # Default free model. OpenRouter's free-tier lineup changes over time --
+ # if this one stops working, either:
+@@ -71,9 +72,11 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
+     """
+     client = _get_client()
+     last_error = None
++    call_id = metrics.new_call_id()
+ 
+     for model in _model_chain():
+         for attempt in range(retries + 1):
++            start = time.time()
+             try:
+                 response = client.chat.completions.create(
+                     model=model,
+@@ -83,11 +86,21 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
+                         {"role": "user", "content": user_message},
+                     ],
+                 )
++                latency = time.time() - start
+                 content = response.choices[0].message.content
++                usage = getattr(response, "usage", None)
++                prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
++                completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+                 if content and content.strip():
++                    metrics.record_attempt(call_id, model, attempt, latency, True,
++                                            prompt_tokens, completion_tokens)
+                     return content
++                metrics.record_attempt(call_id, model, attempt, latency, False,
++                                        prompt_tokens, completion_tokens, error="empty response")
+                 last_error = f"empty response (model: {model})"
+             except Exception as e:
++                latency = time.time() - start
++                metrics.record_attempt(call_id, model, attempt, latency, False, error=str(e))
+                 last_error = f"{model}: {e}"
+                 if _is_rate_limit_or_unavailable(str(e)):
+                     break  # don't waste retries on an exhausted/unavailable model
+diff --git a/core/metrics.py b/core/metrics.py
+new file mode 100644
+index 0000000..4f85fbb
+--- /dev/null
++++ b/core/metrics.py
+@@ -0,0 +1,120 @@
++"""
++Metrics Tracker -- Phase 7.
++Records every LLM call AURA makes during a build (which model,
++how long it took, how many tokens, how many retries/fallbacks it
++took to get a usable response) so a build report shows not just
++whether the build worked, but what it cost in time and API calls --
++useful for comparing agent efficiency across runs and models.
++
++Module-level state, reset at the start of every build() call --
++AURA runs one build at a time, single-threaded, so a plain list is
++enough; no need to thread a tracker instance through every agent.
++
++Note on cost: AURA's default model chain is all ":free" OpenRouter
++models, so dollar cost is always $0. What actually matters here is
++token volume and latency/retries, since those are the real limiting
++resources on a free tier (rate limits, daily quotas).
++"""
++import time
++
++_calls = []
++_next_call_id = 0
++
++
++def reset():
++    """Clear all recorded calls. Call once at the start of every build."""
++    global _next_call_id
++    _calls.clear()
++    _next_call_id = 0
++
++
++def new_call_id() -> int:
++    """
++    One id per logical call_claude()/call_claude_json() invocation --
++    every attempt made while chasing that one logical call (retries on
++    the same model, fallbacks to the next model) shares this id, which
++    is how the summary tells a "retry" apart from a separate LLM call.
++    """
++    global _next_call_id
++    _next_call_id += 1
++    return _next_call_id
++
++
++def record_attempt(call_id: int, model: str, attempt: int, latency: float,
++                    success: bool, prompt_tokens: int = 0,
++                    completion_tokens: int = 0, error: str = None):
++    _calls.append({
++        "call_id": call_id,
++        "model": model,
++        "attempt": attempt,
++        "latency": round(latency, 3),
++        "success": success,
++        "prompt_tokens": prompt_tokens or 0,
++        "completion_tokens": completion_tokens or 0,
++        "error": error,
++    })
++
++
++def summary() -> dict:
++    if not _calls:
++        return {
++            "invocations": 0, "total_attempts": 0, "retries": 0,
++            "successful": 0, "failed": 0,
++            "total_latency": 0.0, "avg_latency": 0.0,
++            "total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0,
++            "by_model": {},
++        }
++
++    invocations = len({c["call_id"] for c in _calls})
++    total_attempts = len(_calls)
++    successful = [c for c in _calls if c["success"]]
++    failed = [c for c in _calls if not c["success"]]
++    total_latency = sum(c["latency"] for c in _calls)
++    prompt_tokens = sum(c["prompt_tokens"] for c in _calls)
++    completion_tokens = sum(c["completion_tokens"] for c in _calls)
++
++    by_model = {}
++    for c in _calls:
++        m = by_model.setdefault(c["model"], {
++            "attempts": 0, "successes": 0, "failures": 0,
++            "latency": 0.0, "tokens": 0,
++        })
++        m["attempts"] += 1
++        m["successes"] += 1 if c["success"] else 0
++        m["failures"] += 0 if c["success"] else 1
++        m["latency"] = round(m["latency"] + c["latency"], 3)
++        m["tokens"] += c["prompt_tokens"] + c["completion_tokens"]
++
++    return {
++        "invocations": invocations,
++        "total_attempts": total_attempts,
++        "retries": total_attempts - invocations,
++        "successful": len(successful),
++        "failed": len(failed),
++        "total_latency": round(total_latency, 2),
++        "avg_latency": round(total_latency / total_attempts, 2),
++        "total_tokens": prompt_tokens + completion_tokens,
++        "prompt_tokens": prompt_tokens,
++        "completion_tokens": completion_tokens,
++        "by_model": by_model,
++    }
++
++
++def format_metrics(m: dict) -> str:
++    lines = [
++        "LLM METRICS",
++        f"  Invocations    : {m['invocations']} logical call(s)"
++        + (f", {m['retries']} retry/fallback attempt(s)" if m["retries"] else ""),
++        f"  Latency        : {m['total_latency']}s total / {m['avg_latency']}s avg per attempt",
++        f"  Tokens         : {m['total_tokens']} total ({m['prompt_tokens']} prompt / {m['completion_tokens']} completion)",
++        f"  Cost           : $0.00 (free-tier models only)",
++    ]
++    if m["by_model"]:
++        lines.append("  By model:")
++        for model, stats in m["by_model"].items():
++            lines.append(
++                f"    - {model}: {stats['attempts']} attempt(s), "
++                f"{stats['successes']} ok / {stats['failures']} failed, "
++                f"{stats['latency']}s, {stats['tokens']} tokens"
++            )
++    return "\n".join(lines)
+diff --git a/core/orchestrator.py b/core/orchestrator.py
+index 0483f44..e976e5f 100644
+--- a/core/orchestrator.py
++++ b/core/orchestrator.py
+@@ -27,6 +27,7 @@ from core.traceability import build_traceability, format_traceability
+ from core.release_gate import evaluate_release, format_release_gate
+ from core.html_report import generate_html_report
+ from core.issue_agent import generate_issue_md
++from core import metrics
+ from core.runtime_agent import check_runtime, format_runtime
+ from core.state_machine import StateMachine
+ from core.failure_clustering import cluster_failures, format_clusters
+@@ -40,6 +41,7 @@ MAX_DEBUG_ATTEMPTS = 3
+ 
+ def build(user_request: str, require_approval: bool = False) -> dict:
+     print(f"\n=== AURA: received request ===\n{user_request}\n")
++    metrics.reset()
+     print("Resetting workspace (starting from a clean slate)...")
+     reset_workspace()
+     git_tool.ensure_repo()
+@@ -292,6 +294,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+         "review_result": review_result,
+         "critic_result": critic_result,
+         "runtime_result": runtime_result,
++        "metrics": metrics.summary(),
+     }
+ 
+     failure_clusters = cluster_failures(debug_log)
+@@ -364,9 +367,14 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+     if human_approved is not None:
+         print(f"Human Approval: {'APPROVED' if human_approved else 'NOT APPROVED'}")
+     print(f"Git branch    : {build_branch}{' (merged to main)' if merged else ' (NOT merged -- still on this branch)'}")
++    metrics_result = report["metrics"]
++    print(f"LLM calls     : {metrics_result['invocations']} logical / {metrics_result['total_attempts']} attempts, "
++          f"{metrics_result['total_latency']}s, {metrics_result['total_tokens']} tokens")
+     print("======================\n")
+     print(format_scorecard(scores))
+     print()
++    print(metrics.format_metrics(metrics_result))
++    print()
+     print("=== CHECKPOINTS (workspace/ has its own git history) ===")
+     print(checkpoint_log)
+     print("To roll back: cd workspace, then git reset --hard <commit-hash>")
