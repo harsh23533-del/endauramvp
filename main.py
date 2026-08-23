@@ -3,6 +3,8 @@ AURA MVP — entry point.
 
 Usage:
     python main.py "Make me a Flask API with a /hello endpoint"
+    python main.py --approve "..."          (prompts for release approval)
+    python main.py --audit <path-to-existing-repo>
 """
 
 import sys
@@ -15,6 +17,7 @@ load_dotenv()
 def main():
     if len(sys.argv) < 2:
         print('Usage: python main.py "your build request here"')
+        print('       python main.py --approve "your build request here"')
         print('       python main.py --audit <path-to-existing-repo>')
         sys.exit(1)
 
@@ -25,6 +28,14 @@ def main():
         from core.audit_agent import audit, format_audit
         result = audit(sys.argv[2])
         print(format_audit(result))
+        return
+
+    if sys.argv[1] == "--approve":
+        if len(sys.argv) < 3:
+            print('Usage: python main.py --approve "your build request here"')
+            sys.exit(1)
+        user_request = " ".join(sys.argv[2:])
+        build(user_request, require_approval=True)
         return
 
     user_request = " ".join(sys.argv[1:])

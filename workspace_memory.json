@@ -5,7 +5,17 @@
       "framework": "flask"
     },
     "needs_database": false,
-    "notes": "A simple Flask app with a single route is sufficient for a /hello endpoint; no persistence is required."
+    "notes": "Flask is lightweight and sufficient for a simple API endpoint; no database needed for a static hello response.",
+    "alternatives_considered": [
+      {
+        "stack": "Node/Express",
+        "reason_rejected": "More boilerplate for a trivial endpoint; Python/Flask is quicker to set up."
+      },
+      {
+        "stack": "FastAPI",
+        "reason_rejected": "Adds async capabilities unnecessary for this basic use case."
+      }
+    ]
   },
   "stack": {
     "language": "python",
@@ -13,6 +23,10 @@
   },
   "conventions": [],
   "past_requests": [
+    "Make me a Flask API with a /hello endpoint",
+    "Make me a Flask API with a /hello endpoint",
+    "Make a Flask API with a GET /hello endpoint returning JSON",
+    "Make me a Flask API with a /hello endpoint",
     "Make me a Flask API with a /hello endpoint"
   ]
 }

@@ -2,6 +2,11 @@
 Single place where AURA talks to an LLM, via OpenRouter
 (OpenAI-compatible API). Keeping this isolated means agents don't
 each duplicate API setup, retry logic, or JSON-parsing.
+
+Includes a model fallback chain: OpenRouter's free-tier daily limit
+(50 requests) is per-model, so when one model is rate-limited or
+temporarily unavailable, this automatically tries the next model in
+the chain instead of retrying the same exhausted model.
 """
 
 import json
@@ -16,6 +21,17 @@ from openai import OpenAI
 #      from https://openrouter.ai/models?max_price=0, or
 #   2) change the default below.
 DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+
+# Verified-live free models (confirmed working via OpenRouter's live
+# model list) used as automatic fallbacks when the primary model hits
+# its daily rate limit or is temporarily unavailable.
+FALLBACK_CANDIDATES = [
+    "openai/gpt-oss-20b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "z-ai/glm-5.2:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+]
 
 _client = None
 
@@ -35,41 +51,54 @@ def _get_client() -> OpenAI:
     return _client
 
 
+def _model_chain() -> list:
+    """Primary model first (from .env or default), then fallbacks."""
+    primary = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
+    return [primary] + [m for m in FALLBACK_CANDIDATES if m != primary]
+
+
+def _is_rate_limit_or_unavailable(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return "429" in error_text or "rate limit" in lowered or "404" in error_text or "unavailable" in lowered
+
+
 def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries: int = 2) -> str:
     """
-    Call the LLM once, retrying on transient errors (connection drops,
-    empty responses, rate limits). Raises RuntimeError if every
-    attempt fails.
+    Call the LLM, retrying transient errors on the same model, and
+    automatically moving to the next model in the fallback chain if
+    the current one is rate-limited or unavailable -- retrying an
+    exhausted daily quota just wastes time.
     """
     client = _get_client()
-    model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
-
     last_error = None
-    for attempt in range(retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-            content = response.choices[0].message.content
-            if content and content.strip():
-                return content
-            last_error = f"empty response (model: {model})"
-        except Exception as e:
-            last_error = str(e)
 
-        if attempt < retries:
-            time.sleep(2 * (attempt + 1))  # 2s, then 4s backoff
+    for model in _model_chain():
+        for attempt in range(retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_message},
+                    ],
+                )
+                content = response.choices[0].message.content
+                if content and content.strip():
+                    return content
+                last_error = f"empty response (model: {model})"
+            except Exception as e:
+                last_error = f"{model}: {e}"
+                if _is_rate_limit_or_unavailable(str(e)):
+                    break  # don't waste retries on an exhausted/unavailable model
+            if attempt < retries:
+                time.sleep(2 * (attempt + 1))  # 2s, then 4s backoff
 
     raise RuntimeError(
-        f"LLM call failed after {retries + 1} attempts. Last error: {last_error}\n"
-        f"If this keeps happening, the model may be rate-limited or unavailable -- "
-        f"try again shortly, or set OPENROUTER_MODEL in .env to a different free "
-        f"model from https://openrouter.ai/models?max_price=0"
+        f"LLM call failed on every model in the fallback chain. Last error: {last_error}\n"
+        f"Tried: {', '.join(_model_chain())}\n"
+        f"Set OPENROUTER_MODEL in .env to force a specific model, or check "
+        f"https://openrouter.ai/models?max_price=0 for currently-live free models."
     )
 
 

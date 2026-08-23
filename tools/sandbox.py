@@ -5,7 +5,7 @@ host machine, with the workspace directory mounted in.
 """
 import subprocess
 from tools.filesystem import WORKSPACE_DIR
-from core.permissions import is_destructive
+from tools.permissions import check as check_permission
 
 IMAGE_NAME = "aura-sandbox"
 DEFAULT_TIMEOUT = 120
@@ -16,11 +16,12 @@ def run_in_sandbox(command: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     Run a shell command inside a throwaway Docker container.
     The workspace directory is mounted at /workspace inside the container.
     """
-    if is_destructive(command):
+    permission = check_permission(command)
+    if not permission["allowed"]:
         return {
             "command": command,
             "stdout": "",
-            "stderr": "BLOCKED: this command matches a known-destructive pattern and was not executed.",
+            "stderr": f"BLOCKED: {permission['reason']}",
             "exit_code": -1,
         }
 
