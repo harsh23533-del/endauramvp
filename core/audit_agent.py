@@ -37,7 +37,7 @@ MAX_FILE_CHARS = 4000
 MAX_TOTAL_CHARS = 60000
 
 
-def _collect_files(repo_path: str) -> dict:
+def collect_files(repo_path: str) -> dict:
     collected = {}
     total_chars = 0
     for root, dirs, files in os.walk(repo_path):
@@ -64,7 +64,7 @@ def audit(repo_path: str) -> dict:
     if not os.path.isdir(repo_path):
         raise FileNotFoundError(f"Not a directory: {repo_path}")
 
-    files = _collect_files(repo_path)
+    files = collect_files(repo_path)
     if not files:
         return {"summary": "No readable source files found.", "findings": [], "files_scanned": 0}
 
