@@ -107,7 +107,7 @@ def run_existing_repo_pipeline(repo_path: str, attempt_pr: bool = True) -> dict:
             f"{finding.get('file', '(unspecified file)')}: {finding.get('note', '')}\n\n"
             "Fix this finding now."
         )
-        result = call_claude_json(system=FIX_SYSTEM_PROMPT, user_message=user_message, max_tokens=3000)
+        result = call_claude_json(system=FIX_SYSTEM_PROMPT, user_message=user_message, max_tokens=3000, role="coding")
         patches = result.get("patches", {})
         for rel_path, content in patches.items():
             full_path = os.path.join(repo_path, rel_path)
@@ -121,7 +121,13 @@ def run_existing_repo_pipeline(repo_path: str, attempt_pr: bool = True) -> dict:
     if not changes_made:
         _run(f"git checkout -q {orig_branch}", repo_path)
         _run(f"git branch -D {branch_name}", repo_path)
-        return {"stage": "NO_CHANGES_PRODUCED", "audit": audit_result, "targeted_findings": targeted}
+        issue_body = (
+            f"AURA's fix pipeline attempted the following finding(s) but produced no usable patch:\n\n"
+            + "\n".join(f"- [{f.get('severity')}] {f.get('file', '')}: {f.get('note', '')}" for f in targeted)
+            + "\n\nA human should take it from here."
+        )
+        issue_result = _try_create_github_issue(repo_path, "AURA: could not auto-fix detected finding(s)", issue_body)
+        return {"stage": "NO_CHANGES_PRODUCED", "audit": audit_result, "targeted_findings": targeted, "issue": issue_result}
 
     # Step 4 -- retest. Best-effort: an arbitrary existing repo may have
     # no discoverable/runnable test suite at all -- that's a reported
@@ -213,11 +219,38 @@ def _try_create_pr(repo_path: str, branch_name: str, base_branch: str, body: str
     return {"created": True, "detail": pr_result["stdout"].strip()}
 
 
+def _try_create_github_issue(repo_path: str, title: str, body: str) -> dict:
+    """
+    PDF section 47: TEST FAILURE -> ISSUE GENERATOR -> GitHub Issue.
+    core/issue_agent.py already covers this for fresh AURA builds (which
+    have no GitHub remote to file an issue against). Existing-repo mode
+    DOES have a real remote, so this attempts an actual `gh issue create`
+    -- falling back to just returning the would-be issue text if `gh`
+    isn't available/authenticated, same fallback pattern as _try_create_pr.
+    """
+    gh_check = _run("gh --version", repo_path, timeout=10)
+    if gh_check["exit_code"] != 0:
+        return {"created": False, "detail": "GitHub CLI ('gh') not available -- issue not filed", "body": body}
+
+    body_path = os.path.join(repo_path, ".aura_issue_body.tmp")
+    with open(body_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    issue_result = _run(f'gh issue create --title "{title}" --body-file {os.path.basename(body_path)}', repo_path, timeout=30)
+    if os.path.exists(body_path):
+        os.remove(body_path)
+    if issue_result["exit_code"] != 0:
+        return {"created": False, "detail": f"gh issue create failed: {issue_result['stderr'][:300]}"}
+    return {"created": True, "detail": issue_result["stdout"].strip()}
+
+
 def format_pipeline_report(report: dict) -> str:
     lines = [f"EXISTING-REPO PIPELINE: {report['stage']}"]
     if report["stage"] in ("NOT_A_REPO", "NO_ACTIONABLE_FINDINGS", "BRANCH_FAILED", "NO_CHANGES_PRODUCED"):
         if report.get("detail"):
             lines.append(f"  {report['detail']}")
+        if report.get("issue"):
+            issue = report["issue"]
+            lines.append(f"  Issue filed : {'yes -- ' + issue.get('detail', '') if issue.get('created') else 'no -- ' + issue.get('detail', '')}")
         return "\n".join(lines)
     lines.append(f"  Branch        : {report.get('branch')} (base: {report.get('base_branch')})")
     lines.append(f"  Fixed         : {', '.join(report.get('changes_made', [])) or '(none)'}")

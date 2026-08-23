@@ -15,6 +15,7 @@ check, so there is no path from "build finished" straight to
 import os
 import time
 from tools.filesystem import WORKSPACE_DIR
+from tools.permissions import agent_capability
 
 
 def build_image(project_name: str, written_files: dict) -> dict:
@@ -46,7 +47,15 @@ def deploy_staging(image: dict, runtime_result: dict) -> dict:
     health-check result (section 13) as the staging validation signal
     instead of re-implementing another health check -- if the app
     never proved it can start, staging can't "pass" either.
+
+    PDF section 24: only the "devops" and "release" roles carry the
+    deploy_staging capability in the permission matrix -- enforced here
+    too, not just documented, so this function can't be called on
+    behalf of an agent role that was never granted it.
     """
+    if not agent_capability("devops", "deploy_staging") and not agent_capability("release", "deploy_staging"):
+        return {"deployed": False, "validated": False, "detail": "blocked -- no role holds deploy_staging capability"}
+
     if not image.get("success"):
         return {"deployed": False, "validated": False, "detail": "no image to deploy"}
 

@@ -44,4 +44,5 @@ def critique(existing_files: dict) -> dict:
         system=CRITIC_SYSTEM_PROMPT,
         user_message=f"Files to critique:\n\n{context}",
         max_tokens=1500,
+        role="reasoning",
     )

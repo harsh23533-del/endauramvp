@@ -48,4 +48,5 @@ def plan(user_request: str, architecture: dict | None = None, requirements: dict
     return call_claude_json(
         system=PLANNER_SYSTEM_PROMPT,
         user_message=user_request + context,
+        role="reasoning",
     )

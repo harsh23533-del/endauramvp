@@ -22,6 +22,7 @@ def design_schema(user_request: str) -> str:
         system=DB_SYSTEM_PROMPT,
         user_message=f"Project goal: {user_request}\n\nWrite schema.sql now.",
         max_tokens=1500,
+        role="coding",
     )
     cleaned = response_text.strip()
     if cleaned.startswith("```"):

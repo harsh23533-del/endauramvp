@@ -74,6 +74,7 @@ def audit(repo_path: str) -> dict:
         system=AUDIT_SYSTEM_PROMPT,
         user_message=f"Repository files:\n\n{context}",
         max_tokens=3000,
+        role="reasoning",
     )
     result["files_scanned"] = len(files)
     return result

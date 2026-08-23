@@ -59,6 +59,7 @@ def analyze_requirements(user_request: str) -> dict:
         system=REQUIREMENTS_SYSTEM_PROMPT,
         user_message=user_request,
         max_tokens=800,
+        role="reasoning",
     )
 
     cleaned = _clean_json(response_text)

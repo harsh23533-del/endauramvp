@@ -11,12 +11,15 @@ IMAGE_NAME = "aura-sandbox"
 DEFAULT_TIMEOUT = 120
 
 
-def run_in_sandbox(command: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
+def run_in_sandbox(command: str, timeout: int = DEFAULT_TIMEOUT, agent: str = None, capability: str = None) -> dict:
     """
     Run a shell command inside a throwaway Docker container.
     The workspace directory is mounted at /workspace inside the container.
+
+    agent/capability are optional (PDF section 24) -- omitted means only
+    the global BLOCKED_PATTERNS guard applies, unchanged from before.
     """
-    permission = check_permission(command)
+    permission = check_permission(command, agent=agent, capability=capability)
     if not permission["allowed"]:
         return {
             "command": command,

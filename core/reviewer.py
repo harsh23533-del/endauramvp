@@ -34,4 +34,5 @@ def review(existing_files: dict) -> dict:
         system=REVIEWER_SYSTEM_PROMPT,
         user_message=f"Files to review:\n\n{context}",
         max_tokens=2000,
+        role="reasoning",
     )

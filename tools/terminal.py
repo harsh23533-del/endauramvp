@@ -12,14 +12,18 @@ from tools.permissions import check as permission_check
 DEFAULT_TIMEOUT = 60  # seconds
 
 
-def run_command(command: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
+def run_command(command: str, timeout: int = DEFAULT_TIMEOUT, agent: str = None, capability: str = None) -> dict:
     """
     Run a shell command inside the workspace directory.
     Returns dict with stdout, stderr, and exit code.
+
+    agent/capability are optional (PDF section 24's per-agent matrix) --
+    when omitted, only the global BLOCKED_PATTERNS guard applies, same
+    as before this parameter existed.
     """
     command = command.strip()
 
-    permission = permission_check(command)
+    permission = permission_check(command, agent=agent, capability=capability)
     if not permission["allowed"]:
         return {
             "command": command,

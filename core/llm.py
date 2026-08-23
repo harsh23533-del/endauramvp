@@ -7,6 +7,14 @@ Includes a model fallback chain: OpenRouter's free-tier daily limit
 (50 requests) is per-model, so when one model is rate-limited or
 temporarily unavailable, this automatically tries the next model in
 the chain instead of retrying the same exhausted model.
+
+PDF section 39 addition -- model router:
+Callers can now pass role="reasoning" | "coding" | "fast" instead of
+(or alongside) a hard-coded model. Each role resolves to its own
+primary model (overridable per-role via env vars), still falling back
+through FALLBACK_CANDIDATES on rate-limit/unavailability exactly as
+before. Passing no role (the default) keeps the old single-chain
+behavior unchanged -- this is additive, not a breaking change.
 """
 
 import json
@@ -34,6 +42,18 @@ FALLBACK_CANDIDATES = [
     "nvidia/nemotron-nano-9b-v2:free",
 ]
 
+# Model router (section 39): which env var and default each role
+# resolves to. All three default to the same free model today because
+# that's what's actually available for free on OpenRouter -- the
+# routing mechanism is real, the model *diversity* is limited by what
+# the free tier offers. Set any of these in .env to point a role at a
+# genuinely different model as better free (or paid) options show up.
+ROLE_DEFAULTS = {
+    "reasoning": ("OPENROUTER_MODEL_REASONING", DEFAULT_MODEL),  # architecture, debugging, planning
+    "coding":    ("OPENROUTER_MODEL_CODING", DEFAULT_MODEL),     # code generation, refactoring
+    "fast":      ("OPENROUTER_MODEL_FAST", "nvidia/nemotron-nano-9b-v2:free"),  # classification, routing, extraction
+}
+
 _client = None
 
 
@@ -52,9 +72,23 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def _model_chain() -> list:
-    """Primary model first (from .env or default), then fallbacks."""
-    primary = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
+def _model_chain(role: str = None) -> list:
+    """
+    Primary model first, then fallbacks.
+
+    Resolution order for the primary model:
+      1. OPENROUTER_MODEL env var (explicit global override -- always wins)
+      2. the role's own env var / default, if a role was given
+      3. DEFAULT_MODEL
+    """
+    explicit_override = os.environ.get("OPENROUTER_MODEL")
+    if explicit_override:
+        primary = explicit_override
+    elif role and role in ROLE_DEFAULTS:
+        env_var, role_default = ROLE_DEFAULTS[role]
+        primary = os.environ.get(env_var, role_default)
+    else:
+        primary = DEFAULT_MODEL
     return [primary] + [m for m in FALLBACK_CANDIDATES if m != primary]
 
 
@@ -63,18 +97,20 @@ def _is_rate_limit_or_unavailable(error_text: str) -> bool:
     return "429" in error_text or "rate limit" in lowered or "404" in error_text or "unavailable" in lowered
 
 
-def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries: int = 2) -> str:
+def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries: int = 2, role: str = None) -> str:
     """
     Call the LLM, retrying transient errors on the same model, and
     automatically moving to the next model in the fallback chain if
     the current one is rate-limited or unavailable -- retrying an
     exhausted daily quota just wastes time.
+
+    role: optional model-router hint ("reasoning" | "coding" | "fast").
     """
     client = _get_client()
     last_error = None
     call_id = metrics.new_call_id()
 
-    for model in _model_chain():
+    for model in _model_chain(role):
         for attempt in range(retries + 1):
             start = time.time()
             try:
@@ -109,7 +145,7 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
 
     raise RuntimeError(
         f"LLM call failed on every model in the fallback chain. Last error: {last_error}\n"
-        f"Tried: {', '.join(_model_chain())}\n"
+        f"Tried: {', '.join(_model_chain(role))}\n"
         f"Set OPENROUTER_MODEL in .env to force a specific model, or check "
         f"https://openrouter.ai/models?max_price=0 for currently-live free models."
     )
@@ -142,16 +178,18 @@ def _extract_json(text: str) -> str:
     return text
 
 
-def call_claude_json(system: str, user_message: str, max_tokens: int = 4000, retries: int = 2) -> dict:
+def call_claude_json(system: str, user_message: str, max_tokens: int = 4000, retries: int = 2, role: str = None) -> dict:
     """
     Call the LLM and parse its response as JSON, retrying the whole
     call (not just the parse) if the model returns malformed JSON --
     a fresh generation is more likely to fix it than re-parsing the
     same broken text.
+
+    role: optional model-router hint ("reasoning" | "coding" | "fast").
     """
     last_error = None
     for attempt in range(retries + 1):
-        response_text = call_claude(system=system, user_message=user_message, max_tokens=max_tokens)
+        response_text = call_claude(system=system, user_message=user_message, max_tokens=max_tokens, role=role)
         cleaned = _extract_json(response_text)
         try:
             return json.loads(cleaned)

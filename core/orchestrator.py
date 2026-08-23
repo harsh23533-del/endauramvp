@@ -73,6 +73,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     print(f"  stack: {architecture.get('stack')}")
     print(f"  needs_database: {architecture.get('needs_database')}")
     print(f"  notes: {architecture.get('notes')}")
+    if architecture.get("score") is not None:
+        print(f"  architecture score: {architecture.get('score')}/100 (chosen from {len(architecture.get('candidates', []))} candidate(s))")
     for alt in architecture.get("alternatives_considered", []):
         print(f"  (considered and rejected: {alt.get('stack')} -- {alt.get('reason_rejected')})")
     log_event("architect", "completed", str(architecture.get("stack")))
@@ -104,7 +106,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
             )
             write_file(task["path"], content)
             written_files[task["path"]] = content
-    log_event("coder", "completed", f"{len(written_files)} files written")
+    log_event("coder", "completed", f"{len(written_files)} files written",
+              files_changed=list(written_files.keys()))
 
     if architecture.get("needs_database"):
         print("\n--- Database Agent: designing schema ---")
@@ -134,7 +137,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
                 print(f"  skipping (handled by test runner): {task['command']}")
                 continue
             print(f"  running: {task['command']}")
-            result = run_in_sandbox(task["command"])
+            result = run_in_sandbox(task["command"], agent="backend", capability="shell")
             command_results.append(result)
             if result["exit_code"] != 0:
                 print(f"    WARNING: exit code {result['exit_code']}")
@@ -146,7 +149,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     status = "PASSED" if test_result["passed"] else "FAILED"
     print(f"  tests: {status}")
     print(f"  {test_result['raw_output'][:800]}")
-    log_event("tester", "completed" if test_result["passed"] else "failed", status)
+    log_event("tester", "completed" if test_result["passed"] else "failed", status,
+              tests_passed=test_result.get("passed_count"), tests_failed=test_result.get("failed_count"))
 
     debug_attempts = 0
     patches_rejected = 0
