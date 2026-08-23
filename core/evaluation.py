@@ -25,10 +25,15 @@ def score(report: dict) -> dict:
     else:
         scores["tests"] = 100 if test_result.get("passed") else 0
 
-    # Security: deduct per finding from the static scan.
+    # Security: deduct more for high-severity findings (secrets,
+    # injection) than for advisory ones (debug flags, weak crypto) --
+    # a flat per-finding penalty treated both the same before.
     security_result = report.get("security_result", {})
-    findings = len(security_result.get("findings", []))
-    scores["security"] = max(0, 100 - 15 * findings)
+    dependency_result = report.get("dependency_result", {})
+    sec_high = security_result.get("high_count", 0) + dependency_result.get("high_count", 0)
+    sec_medium = security_result.get("medium_count", 0) + dependency_result.get("medium_count", 0)
+    sec_low = security_result.get("low_count", 0) + dependency_result.get("low_count", 0)
+    scores["security"] = max(0, 100 - 20 * sec_high - 8 * sec_medium - 3 * sec_low)
 
     # Code quality: deduct per reviewer issue; 50 if the reviewer
     # itself failed to run (unknown, not zero -- don't punish for

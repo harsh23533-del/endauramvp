@@ -17,7 +17,8 @@ from core.debugger import debug
 from core.infra_check import detect as detect_infra_error
 from core.reviewer import review
 from core.critic import critique
-from core.security import scan as security_scan
+from core.security import scan as security_scan, format_security
+from core.dependency_scanner import scan_dependencies, format_dependency_scan
 from core.evaluation import score as evaluate, format_scorecard
 from core.documentation_agent import generate_readme
 from core.devops_agent import generate_ci_workflow
@@ -232,10 +233,17 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     security_result = security_scan(written_files)
     performance_result = performance_scan(written_files)
     print_performance(performance_result)
-    print(f"  security: {'PASS' if security_result['passed'] else 'ISSUES FOUND'}")
-    for finding in security_result["findings"]:
-        print(f"    [{finding['file']}:{finding['line']}] {finding['issue']}")
-    log_event("security", "completed", "PASS" if security_result["passed"] else f"{len(security_result['findings'])} issues")
+    security_status = "PASS" if security_result["passed"] else f"{security_result['high_count']} HIGH-severity issue(s)"
+    print(f"  security: {security_status}"
+          f" ({security_result['medium_count']} medium, {security_result['low_count']} low -- advisory only)")
+    print(format_security(security_result))
+    log_event("security", "completed", "PASS" if security_result["passed"] else f"{security_result['high_count']} high-severity issues")
+
+    print("\n--- Dependency Scan: checking known vulnerabilities ---")
+    dependency_result = scan_dependencies(written_files)
+    print(format_dependency_scan(dependency_result))
+    log_event("dependency_scan", "completed" if dependency_result["attempted"] else "skipped",
+              f"{dependency_result['high_count']} high-severity" if dependency_result["attempted"] else "no manifest / scan unavailable")
 
     print("\n--- Runtime Agent: checking if the app actually starts ---")
     runtime_result = check_runtime(written_files)
@@ -280,6 +288,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         "debug_log": debug_log,
         "infra_error": infra_error,
         "security_result": security_result,
+        "dependency_result": dependency_result,
         "review_result": review_result,
         "critic_result": critic_result,
         "runtime_result": runtime_result,
@@ -348,7 +357,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     if infra_error:
         print(f"Infra issue   : {infra_error} (fix your environment, then re-run)")
     print(f"Debug attempts: {debug_attempts} ({patches_rejected} rejected as regressions)")
-    print(f"Security      : {'PASS' if security_result['passed'] else 'ISSUES'}")
+    print(f"Security      : {'PASS' if security_result['passed'] and dependency_result['passed'] else 'HIGH-SEVERITY ISSUES'}")
     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
     print(f"Critic        : {critic_result.get('verdict', 'unknown')}")
     print(f"Release Gate  : {gate['status']}")

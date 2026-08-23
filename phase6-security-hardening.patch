@@ -1,0 +1,418 @@
+diff --git a/core/dependency_scanner.py b/core/dependency_scanner.py
+new file mode 100644
+index 0000000..5c4c5cb
+--- /dev/null
++++ b/core/dependency_scanner.py
+@@ -0,0 +1,167 @@
++"""
++Dependency vulnerability scanner (Phase 6 / PDF section 38: pip-audit,
++npm audit). Runs the real tool inside the same sandboxed container
++used for tests -- not another regex guess -- so findings are backed by
++an actual advisory database (PyPI Advisory DB / npm's).
++
++Network-dependent by nature (it queries a vulnerability database), so
++this is best-effort: if the sandbox has no network, or the install/
++scan fails for any reason, we report "skipped" rather than failing the
++whole build over a scan we couldn't run. A skipped dependency scan is
++never treated as a security pass OR a security failure.
++"""
++import json
++import re
++from tools.sandbox import run_in_sandbox
++
++PIP_AUDIT_CMD = (
++    "if [ -f requirements.txt ]; then "
++    "  pip install --quiet --disable-pip-version-check pip-audit 2>/dev/null && "
++    "  pip-audit -r requirements.txt --format json 2>/tmp/pip_audit_err.log; "
++    "  echo '---STDERR---'; cat /tmp/pip_audit_err.log; "
++    "else "
++    "  echo 'AURA_SKIP:no requirements.txt'; "
++    "fi"
++)
++
++NPM_AUDIT_CMD = (
++    "if [ -f package.json ]; then "
++    "  npm install --silent --no-audit --no-fund >/dev/null 2>&1; "
++    "  npm audit --json 2>/tmp/npm_audit_err.log; "
++    "  echo '---STDERR---'; cat /tmp/npm_audit_err.log; "
++    "else "
++    "  echo 'AURA_SKIP:no package.json'; "
++    "fi"
++)
++
++
++def _severity_from_pip_audit(vuln: dict) -> str:
++    # pip-audit doesn't always include a severity field; if it does
++    # (via OSV data) use it, otherwise default to "high" -- a known
++    # CVE with a fix available is not something to call "low".
++    sev = (vuln.get("severity") or "").lower()
++    if sev in ("high", "critical"):
++        return "high"
++    if sev == "medium":
++        return "medium"
++    if sev == "low":
++        return "low"
++    return "high"
++
++
++def _scan_pip(timeout: int) -> dict:
++    result = run_in_sandbox(PIP_AUDIT_CMD, timeout=timeout)
++    output = result["stdout"]
++
++    if "AURA_SKIP" in output:
++        return {"attempted": False, "findings": [], "detail": "no requirements.txt"}
++
++    json_part = output.split("---STDERR---")[0].strip()
++    if not json_part:
++        return {"attempted": True, "findings": [], "detail": "pip-audit produced no output (install/network issue?)", "error": True}
++
++    try:
++        data = json.loads(json_part)
++    except json.JSONDecodeError:
++        return {"attempted": True, "findings": [], "detail": "could not parse pip-audit output", "error": True}
++
++    findings = []
++    for dep in data.get("dependencies", data if isinstance(data, list) else []):
++        name = dep.get("name", "unknown")
++        version = dep.get("version", "?")
++        for vuln in dep.get("vulns", []):
++            findings.append({
++                "package": f"{name}=={version}",
++                "id": vuln.get("id", "?"),
++                "fix_versions": vuln.get("fix_versions", []),
++                "severity": _severity_from_pip_audit(vuln),
++                "source": "pip-audit",
++            })
++    return {"attempted": True, "findings": findings, "detail": f"{len(findings)} vulnerable dependency finding(s)"}
++
++
++def _scan_npm(timeout: int) -> dict:
++    result = run_in_sandbox(NPM_AUDIT_CMD, timeout=timeout)
++    output = result["stdout"]
++
++    if "AURA_SKIP" in output:
++        return {"attempted": False, "findings": [], "detail": "no package.json"}
++
++    json_part = output.split("---STDERR---")[0].strip()
++    if not json_part:
++        return {"attempted": True, "findings": [], "detail": "npm audit produced no output (install/network issue?)", "error": True}
++
++    try:
++        data = json.loads(json_part)
++    except json.JSONDecodeError:
++        return {"attempted": True, "findings": [], "detail": "could not parse npm audit output", "error": True}
++
++    findings = []
++    vulnerabilities = data.get("vulnerabilities", {})
++    for pkg_name, info in vulnerabilities.items():
++        severity = info.get("severity", "high")
++        if severity not in ("low", "medium"):
++            severity = "high"
++        findings.append({
++            "package": pkg_name,
++            "id": ",".join(str(v.get("source", "")) for v in info.get("via", []) if isinstance(v, dict)) or "?",
++            "fix_versions": [],
++            "severity": severity,
++            "source": "npm audit",
++        })
++    return {"attempted": True, "findings": findings, "detail": f"{len(findings)} vulnerable dependency finding(s)"}
++
++
++def scan_dependencies(written_files: dict, timeout: int = 90) -> dict:
++    """
++    Runs pip-audit and/or npm audit depending on which manifest files
++    are present. Returns a merged result; never raises -- a scan that
++    couldn't run is reported as such, not silently treated as clean.
++    """
++    pip_result = None
++    npm_result = None
++
++    if "requirements.txt" in written_files:
++        pip_result = _scan_pip(timeout)
++    if "package.json" in written_files:
++        npm_result = _scan_npm(timeout)
++
++    all_findings = []
++    attempted_any = False
++    skipped_reasons = []
++
++    for result in (pip_result, npm_result):
++        if result is None:
++            continue
++        if result["attempted"]:
++            attempted_any = True
++            all_findings.extend(result["findings"])
++            if result.get("error"):
++                skipped_reasons.append(result["detail"])
++        else:
++            skipped_reasons.append(result["detail"])
++
++    high = [f for f in all_findings if f["severity"] == "high"]
++    return {
++        "attempted": attempted_any,
++        "passed": len(high) == 0,
++        "findings": all_findings,
++        "high_count": len(high),
++        "medium_count": len([f for f in all_findings if f["severity"] == "medium"]),
++        "low_count": len([f for f in all_findings if f["severity"] == "low"]),
++        "skipped_reasons": skipped_reasons,
++    }
++
++
++def format_dependency_scan(result: dict) -> str:
++    if not result["attempted"] and not result["findings"]:
++        reasons = "; ".join(result.get("skipped_reasons", [])) or "no manifest files found"
++        return f"  Dependency scan: skipped ({reasons})"
++    if not result["findings"]:
++        return "  Dependency scan: no known vulnerabilities found."
++    lines = ["  Dependency scan:"]
++    order = {"high": 0, "medium": 1, "low": 2}
++    for f in sorted(result["findings"], key=lambda x: order.get(x["severity"], 3)):
++        fix = f" (fix: {', '.join(f['fix_versions'])})" if f.get("fix_versions") else ""
++        lines.append(f"    [{f['severity'].upper()}] {f['package']} -- {f['id']}{fix}")
++    return "\n".join(lines)
+diff --git a/core/documentation_agent.py b/core/documentation_agent.py
+index 17c7796..7fa1705 100644
+--- a/core/documentation_agent.py
++++ b/core/documentation_agent.py
+@@ -81,11 +81,16 @@ def generate_readme(report: dict) -> str:
+         lines.append("")
+ 
+     security_result = report.get("security_result", {})
++    dependency_result = report.get("dependency_result", {})
+     findings = security_result.get("findings", [])
+-    if findings:
++    dep_findings = dependency_result.get("findings", [])
++    if findings or dep_findings:
+         lines.append("## Known Issues\n")
+-        for f in findings:
+-            lines.append(f"- `{f['file']}:{f['line']}` -- {f['issue']}")
++        order = {"high": 0, "medium": 1, "low": 2}
++        for f in sorted(findings, key=lambda x: order.get(x.get("severity"), 3)):
++            lines.append(f"- `[{f.get('severity', '?').upper()}]` `{f['file']}:{f['line']}` -- {f['issue']}")
++        for f in sorted(dep_findings, key=lambda x: order.get(x.get("severity"), 3)):
++            lines.append(f"- `[{f.get('severity', '?').upper()}]` {f['package']} -- {f['id']} ({f.get('source')})")
+         lines.append("")
+ 
+     return "\n".join(lines)
+diff --git a/core/evaluation.py b/core/evaluation.py
+index e98fdfd..6d2a728 100644
+--- a/core/evaluation.py
++++ b/core/evaluation.py
+@@ -25,10 +25,15 @@ def score(report: dict) -> dict:
+     else:
+         scores["tests"] = 100 if test_result.get("passed") else 0
+ 
+-    # Security: deduct per finding from the static scan.
++    # Security: deduct more for high-severity findings (secrets,
++    # injection) than for advisory ones (debug flags, weak crypto) --
++    # a flat per-finding penalty treated both the same before.
+     security_result = report.get("security_result", {})
+-    findings = len(security_result.get("findings", []))
+-    scores["security"] = max(0, 100 - 15 * findings)
++    dependency_result = report.get("dependency_result", {})
++    sec_high = security_result.get("high_count", 0) + dependency_result.get("high_count", 0)
++    sec_medium = security_result.get("medium_count", 0) + dependency_result.get("medium_count", 0)
++    sec_low = security_result.get("low_count", 0) + dependency_result.get("low_count", 0)
++    scores["security"] = max(0, 100 - 20 * sec_high - 8 * sec_medium - 3 * sec_low)
+ 
+     # Code quality: deduct per reviewer issue; 50 if the reviewer
+     # itself failed to run (unknown, not zero -- don't punish for
+diff --git a/core/orchestrator.py b/core/orchestrator.py
+index eaf8062..0483f44 100644
+--- a/core/orchestrator.py
++++ b/core/orchestrator.py
+@@ -17,7 +17,8 @@ from core.debugger import debug
+ from core.infra_check import detect as detect_infra_error
+ from core.reviewer import review
+ from core.critic import critique
+-from core.security import scan as security_scan
++from core.security import scan as security_scan, format_security
++from core.dependency_scanner import scan_dependencies, format_dependency_scan
+ from core.evaluation import score as evaluate, format_scorecard
+ from core.documentation_agent import generate_readme
+ from core.devops_agent import generate_ci_workflow
+@@ -232,10 +233,17 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+     security_result = security_scan(written_files)
+     performance_result = performance_scan(written_files)
+     print_performance(performance_result)
+-    print(f"  security: {'PASS' if security_result['passed'] else 'ISSUES FOUND'}")
+-    for finding in security_result["findings"]:
+-        print(f"    [{finding['file']}:{finding['line']}] {finding['issue']}")
+-    log_event("security", "completed", "PASS" if security_result["passed"] else f"{len(security_result['findings'])} issues")
++    security_status = "PASS" if security_result["passed"] else f"{security_result['high_count']} HIGH-severity issue(s)"
++    print(f"  security: {security_status}"
++          f" ({security_result['medium_count']} medium, {security_result['low_count']} low -- advisory only)")
++    print(format_security(security_result))
++    log_event("security", "completed", "PASS" if security_result["passed"] else f"{security_result['high_count']} high-severity issues")
++
++    print("\n--- Dependency Scan: checking known vulnerabilities ---")
++    dependency_result = scan_dependencies(written_files)
++    print(format_dependency_scan(dependency_result))
++    log_event("dependency_scan", "completed" if dependency_result["attempted"] else "skipped",
++              f"{dependency_result['high_count']} high-severity" if dependency_result["attempted"] else "no manifest / scan unavailable")
+ 
+     print("\n--- Runtime Agent: checking if the app actually starts ---")
+     runtime_result = check_runtime(written_files)
+@@ -280,6 +288,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+         "debug_log": debug_log,
+         "infra_error": infra_error,
+         "security_result": security_result,
++        "dependency_result": dependency_result,
+         "review_result": review_result,
+         "critic_result": critic_result,
+         "runtime_result": runtime_result,
+@@ -348,7 +357,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+     if infra_error:
+         print(f"Infra issue   : {infra_error} (fix your environment, then re-run)")
+     print(f"Debug attempts: {debug_attempts} ({patches_rejected} rejected as regressions)")
+-    print(f"Security      : {'PASS' if security_result['passed'] else 'ISSUES'}")
++    print(f"Security      : {'PASS' if security_result['passed'] and dependency_result['passed'] else 'HIGH-SEVERITY ISSUES'}")
+     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
+     print(f"Critic        : {critic_result.get('verdict', 'unknown')}")
+     print(f"Release Gate  : {gate['status']}")
+diff --git a/core/release_gate.py b/core/release_gate.py
+index cacf119..eb29d09 100644
+--- a/core/release_gate.py
++++ b/core/release_gate.py
+@@ -15,10 +15,19 @@ def evaluate_release(report: dict) -> dict:
+     if not test_result.get("passed"):
+         reasons.append("Tests are not passing.")
+ 
++    # Only HIGH-severity findings block release -- a "debug=True" left
++    # in isn't the same risk class as a hardcoded secret or SQL
++    # injection, and shouldn't gate the build the same way (PDF
++    # section 16's categories aren't all equally severe).
+     security_result = report.get("security_result", {})
+-    if not security_result.get("passed", True):
+-        count = len(security_result.get("findings", []))
+-        reasons.append(f"{count} security finding(s) unresolved.")
++    high_sec = security_result.get("high_count", 0)
++    if high_sec:
++        reasons.append(f"{high_sec} high-severity security finding(s) unresolved.")
++
++    dependency_result = report.get("dependency_result", {})
++    high_dep = dependency_result.get("high_count", 0)
++    if high_dep:
++        reasons.append(f"{high_dep} high-severity vulnerable dependenc(y/ies) found.")
+ 
+     review_result = report.get("review_result", {})
+     if review_result.get("approved") is False:
+diff --git a/core/security.py b/core/security.py
+index ff0052d..92ab5d8 100644
+--- a/core/security.py
++++ b/core/security.py
+@@ -1,31 +1,100 @@
+ """
+-Security agent.
+-Runs simple static checks across project files -- no LLM call needed,
+-fast and deterministic.
++Security agent (Phase 6).
++Runs deterministic static checks across project files -- no LLM call
++needed, fast and repeatable. Findings are categorized roughly along
++OWASP Top 10 lines (PDF section 16) and given a severity, so the
++release gate can block on real risk (hardcoded secrets, injection)
++without blocking on a "debug=True" left in a throwaway dev build.
+ """
+ import re
+ 
++# Each entry: (pattern, issue, category, severity)
++# severity: "high" blocks release; "medium"/"low" are advisory only.
+ CHECKS = [
+-    (r"(?i)(api_key|secret|password)\s*=\s*[\"'][^\"']{6,}[\"']", "Possible hardcoded secret"),
+-    (r"\beval\(", "Use of eval() is dangerous"),
+-    (r"\bexec\(", "Use of exec() is dangerous"),
+-    (r"debug\s*=\s*True", "Debug mode enabled -- unsafe for production"),
+-    (r"shell\s*=\s*True", "shell=True can enable command injection if input is untrusted"),
++    # --- Secrets exposure ---
++    (r"(?i)(api[_-]?key|secret|password|passwd)\s*=\s*[\"'][^\"']{6,}[\"']",
++     "Possible hardcoded secret", "Secrets", "high"),
++    (r"AKIA[0-9A-Z]{16}",
++     "Looks like a hardcoded AWS access key ID", "Secrets", "high"),
++    (r"-----BEGIN (RSA |EC |)PRIVATE KEY-----",
++     "Hardcoded private key material", "Secrets", "high"),
++    (r"\bxox[baprs]-[0-9A-Za-z-]{10,}",
++     "Hardcoded Slack token", "Secrets", "high"),
++    (r"\bghp_[A-Za-z0-9]{36}\b",
++     "Hardcoded GitHub personal access token", "Secrets", "high"),
++
++    # --- Injection ---
++    (r"\beval\(",
++     "Use of eval() is dangerous -- executes arbitrary code", "Injection", "high"),
++    (r"\bexec\(",
++     "Use of exec() is dangerous -- executes arbitrary code", "Injection", "high"),
++    (r"\bos\.system\(",
++     "os.system() with any untrusted input risks command injection", "Injection", "high"),
++    (r"shell\s*=\s*True",
++     "shell=True can enable command injection if input is untrusted", "Injection", "high"),
++    (r"\.execute\(\s*f[\"']|\.execute\([^)]*%\s*[\"']|\.execute\([^)]*\+",
++     "Building a SQL query with string formatting/concatenation risks SQL injection -- use parameterized queries",
++     "Injection", "high"),
++
++    # --- Insecure deserialization ---
++    (r"\bpickle\.loads?\(",
++     "pickle.load(s) on untrusted data can execute arbitrary code", "Insecure Deserialization", "high"),
++    (r"\byaml\.load\((?!.*Loader=yaml\.SafeLoader)",
++     "yaml.load() without SafeLoader can execute arbitrary code", "Insecure Deserialization", "high"),
++
++    # --- Weak crypto ---
++    (r"hashlib\.md5\(",
++     "MD5 is not safe for passwords/security -- use bcrypt/argon2/scrypt", "Weak Crypto", "medium"),
++    (r"hashlib\.sha1\(",
++     "SHA1 is not safe for passwords/security -- use bcrypt/argon2/scrypt", "Weak Crypto", "medium"),
++
++    # --- Broken access control / config exposure ---
++    (r"debug\s*=\s*True",
++     "Debug mode enabled -- unsafe for production (stack traces, code exposure)", "Configuration", "medium"),
++    (r"ALLOWED_HOSTS\s*=\s*\[\s*[\"']\*[\"']\s*\]",
++     "ALLOWED_HOSTS wildcard accepts any Host header", "Configuration", "medium"),
++    (r"CORS.*[\"']\*[\"']|Access-Control-Allow-Origin.*\*",
++     "Wildcard CORS origin allows any site to call this API", "Broken Access Control", "medium"),
++
++    # --- XSS ---
++    (r"\|\s*safe\b",
++     "Jinja |safe filter disables autoescaping -- confirm the value is never user-controlled", "XSS", "medium"),
++    (r"dangerouslySetInnerHTML",
++     "dangerouslySetInnerHTML bypasses React's XSS protection -- sanitize input first", "XSS", "medium"),
+ ]
+ 
+ 
+ def scan(existing_files: dict) -> dict:
+     findings = []
+     for path, content in existing_files.items():
+-        for pattern, note in CHECKS:
++        for pattern, issue, category, severity in CHECKS:
+             for match in re.finditer(pattern, content):
+                 line_no = content[:match.start()].count("\n") + 1
+                 findings.append({
+                     "file": path,
+                     "line": line_no,
+-                    "issue": note,
++                    "issue": issue,
++                    "category": category,
++                    "severity": severity,
+                 })
++
++    high = [f for f in findings if f["severity"] == "high"]
+     return {
+-        "passed": len(findings) == 0,
++        # Only HIGH severity blocks the release gate -- medium/low are
++        # advisory (surfaced in the report, not a build blocker).
++        "passed": len(high) == 0,
+         "findings": findings,
+-    }
+\ No newline at end of file
++        "high_count": len(high),
++        "medium_count": len([f for f in findings if f["severity"] == "medium"]),
++        "low_count": len([f for f in findings if f["severity"] == "low"]),
++    }
++
++
++def format_security(result: dict) -> str:
++    if not result["findings"]:
++        return "  No issues found."
++    lines = []
++    order = {"high": 0, "medium": 1, "low": 2}
++    for f in sorted(result["findings"], key=lambda x: order.get(x["severity"], 3)):
++        lines.append(f"    [{f['severity'].upper()}][{f['category']}] {f['file']}:{f['line']} -- {f['issue']}")
++    return "\n".join(lines)

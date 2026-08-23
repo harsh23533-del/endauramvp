@@ -81,11 +81,16 @@ def generate_readme(report: dict) -> str:
         lines.append("")
 
     security_result = report.get("security_result", {})
+    dependency_result = report.get("dependency_result", {})
     findings = security_result.get("findings", [])
-    if findings:
+    dep_findings = dependency_result.get("findings", [])
+    if findings or dep_findings:
         lines.append("## Known Issues\n")
-        for f in findings:
-            lines.append(f"- `{f['file']}:{f['line']}` -- {f['issue']}")
+        order = {"high": 0, "medium": 1, "low": 2}
+        for f in sorted(findings, key=lambda x: order.get(x.get("severity"), 3)):
+            lines.append(f"- `[{f.get('severity', '?').upper()}]` `{f['file']}:{f['line']}` -- {f['issue']}")
+        for f in sorted(dep_findings, key=lambda x: order.get(x.get("severity"), 3)):
+            lines.append(f"- `[{f.get('severity', '?').upper()}]` {f['package']} -- {f['id']} ({f.get('source')})")
         lines.append("")
 
     return "\n".join(lines)
