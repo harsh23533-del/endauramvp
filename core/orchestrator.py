@@ -42,6 +42,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     print("Resetting workspace (starting from a clean slate)...")
     reset_workspace()
     git_tool.ensure_repo()
+    build_branch = git_tool.create_build_branch(user_request)
+    print(f"  working on branch: {build_branch} (main stays untouched until release)")
     sm = StateMachine()
 
     from core.requirements_agent import analyze_requirements, print_requirements, format_spec
@@ -308,6 +310,21 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         print(f"  Human decision: {'APPROVED' if human_approved else 'NOT APPROVED'}")
     report["human_approved"] = human_approved
 
+    print("\n--- Git: diff vs main ---")
+    print("  " + git_tool.diff_stat().replace("\n", "\n  "))
+    report["git_branch"] = build_branch
+    report["git_diff_stat"] = git_tool.diff_stat()
+
+    merged = False
+    ok_to_merge = gate["status"] == "RELEASE_READY" and (not require_approval or human_approved)
+    if ok_to_merge:
+        merge_result = git_tool.merge_to_main(build_branch)
+        merged = merge_result["exit_code"] == 0
+        print(f"  merged {build_branch} -> main" if merged else f"  merge FAILED: {merge_result['stderr'][:200]}")
+    else:
+        print(f"  NOT merged to main -- staying on {build_branch} for review (git checkout {build_branch})")
+    report["git_merged"] = merged
+
     sm.enter("RELEASE_READY" if gate["status"] == "RELEASE_READY" else "BLOCKED")
     report["state_timeline"] = sm.transitions
 
@@ -337,6 +354,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     print(f"Release Gate  : {gate['status']}")
     if human_approved is not None:
         print(f"Human Approval: {'APPROVED' if human_approved else 'NOT APPROVED'}")
+    print(f"Git branch    : {build_branch}{' (merged to main)' if merged else ' (NOT merged -- still on this branch)'}")
     print("======================\n")
     print(format_scorecard(scores))
     print()
