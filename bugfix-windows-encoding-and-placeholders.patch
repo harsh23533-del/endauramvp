@@ -1,0 +1,151 @@
+From 125e9bf11e508220a5b7f1d878332904cf7168ec Mon Sep 17 00:00:00 2001
+From: AURA <aura@local>
+Date: Sun, 23 Aug 2026 17:48:34 +0000
+Subject: [PATCH] Fix live bugs found in functional test: Windows
+ UnicodeEncodeError on write_file/read_file (force utf-8), and free-tier model
+ echoing prompt JSON-example placeholders verbatim (audit/reviewer/debugger
+ prompts now use unmistakable bracketed placeholders + audit_agent drops any
+ placeholder-matching finding as defense-in-depth)
+
+---
+ core/audit_agent.py | 36 ++++++++++++++++++++++++++++++++++--
+ core/debugger.py    |  2 +-
+ core/reviewer.py    |  6 +++++-
+ tools/filesystem.py |  9 +++++++--
+ 4 files changed, 47 insertions(+), 6 deletions(-)
+
+diff --git a/core/audit_agent.py b/core/audit_agent.py
+index 51ee567..17e4089 100644
+--- a/core/audit_agent.py
++++ b/core/audit_agent.py
+@@ -18,16 +18,21 @@ error handling, unclear architecture, missing validation).
+ 
+ Rules:
+ - Respond ONLY with valid JSON, no markdown fences, no preamble.
++- The example below shows the JSON SHAPE only -- every value in it is a placeholder you
++  must replace with real content from the actual files you were given. Never return
++  the placeholder text itself.
+ - Format:
+ {
+-  "summary": "one paragraph on what this project is and how it's built",
++  "summary": "<ONE PARAGRAPH: WHAT THIS SPECIFIC PROJECT DOES AND HOW IT'S STRUCTURED>",
+   "findings": [
+-    {"area": "security", "severity": "high", "note": "short description", "file": "path/if/known"}
++    {"area": "security", "severity": "high", "note": "<THE ACTUAL PROBLEM YOU FOUND, SPECIFIC TO A REAL FILE>", "file": "<REAL FILE PATH, OR OMIT THIS KEY IF UNKNOWN>"}
+   ]
+ }
+ - severity is one of: high, medium, low.
+ - Prioritize findings with real impact over style nitpicks.
+ - If you cannot tell what a file does from a truncated excerpt, say so instead of guessing.
++- If you have no real findings, return an empty findings list -- do not fill it with
++  the example above.
+ """
+ 
+ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", "workspace"}
+@@ -36,6 +41,18 @@ MAX_FILES = 40
+ MAX_FILE_CHARS = 4000
+ MAX_TOTAL_CHARS = 60000
+ 
++# Weaker free-tier models occasionally echo the prompt's own JSON example
++# back verbatim instead of filling it in with real content -- seen live
++# with "short description" / "path/if/known" returned unchanged. These
++# are the exact placeholder strings from the prompt above; anything that
++# matches one gets dropped rather than shown to the user as a real finding.
++_PLACEHOLDER_NOTES = {"short description", "the actual problem you found, specific to a real file"}
++_PLACEHOLDER_FILES = {"path/if/known", "real file path, or omit this key if unknown"}
++_PLACEHOLDER_SUMMARIES = {
++    "one paragraph on what this project is and how it's built",
++    "one paragraph: what this specific project does and how it's structured",
++}
++
+ 
+ def collect_files(repo_path: str) -> dict:
+     collected = {}
+@@ -77,6 +94,21 @@ def audit(repo_path: str) -> dict:
+         role="reasoning",
+     )
+     result["files_scanned"] = len(files)
++
++    # Defense-in-depth against the placeholder-echo failure mode above --
++    # even if a future prompt edit reintroduces natural-sentence examples,
++    # this still catches a model copying them verbatim.
++    if result.get("summary", "").strip().lower() in _PLACEHOLDER_SUMMARIES:
++        result["summary"] = "(model did not produce a real summary for this repository)"
++    real_findings = []
++    for f in result.get("findings", []):
++        note_is_placeholder = f.get("note", "").strip().lower() in _PLACEHOLDER_NOTES
++        file_is_placeholder = f.get("file", "").strip().lower() in _PLACEHOLDER_FILES
++        if note_is_placeholder and (not f.get("file") or file_is_placeholder):
++            continue
++        real_findings.append(f)
++    result["findings"] = real_findings
++
+     return result
+ 
+ 
+diff --git a/core/debugger.py b/core/debugger.py
+index 239b0b3..1261227 100644
+--- a/core/debugger.py
++++ b/core/debugger.py
+@@ -16,7 +16,7 @@ Rules:
+ - Respond ONLY with valid JSON, no markdown fences, no preamble.
+ - Format:
+ {
+-  "root_cause": "short explanation",
++  "root_cause": "<THE ACTUAL ROOT CAUSE FROM THE TEST OUTPUT AND FILES YOU WERE GIVEN>",
+   "patches": {
+     "path/to/file.py": "COMPLETE new content of this file"
+   }
+diff --git a/core/reviewer.py b/core/reviewer.py
+index 7fc3f89..afba430 100644
+--- a/core/reviewer.py
++++ b/core/reviewer.py
+@@ -13,14 +13,18 @@ duplication, obvious bugs, and basic security issues.
+ Rules:
+ - Be practical, this is an MVP -- do not demand production-grade infrastructure.
+ - Respond ONLY with valid JSON, no markdown fences, no preamble.
++- The example below is a JSON SHAPE only -- "app.py" and "short description" are
++  placeholders. Use real file names and real, specific issue descriptions from the
++  files you were actually given.
+ - Format:
+ {
+   "approved": true,
+   "issues": [
+-    {"file": "app.py", "severity": "warning", "note": "short description"}
++    {"file": "<REAL FILE PATH>", "severity": "warning", "note": "<THE ACTUAL ISSUE, SPECIFIC TO THIS CODE>"}
+   ]
+ }
+ - Set "approved" to false only for real bugs or security problems, not style nitpicks.
++- If there are no real issues, return an empty issues list.
+ """
+ 
+ 
+diff --git a/tools/filesystem.py b/tools/filesystem.py
+index 3083111..e4f6612 100644
+--- a/tools/filesystem.py
++++ b/tools/filesystem.py
+@@ -24,14 +24,19 @@ def _safe_path(relative_path: str) -> str:
+ def write_file(relative_path: str, content: str) -> str:
+     path = _safe_path(relative_path)
+     os.makedirs(os.path.dirname(path), exist_ok=True)
+-    with open(path, "w") as f:
++    # encoding="utf-8" is required, not optional: on Windows, Python's
++    # default open() encoding is the system locale (often cp1252), which
++    # raises UnicodeEncodeError the moment an LLM response contains a
++    # "fancy" character it favors over plain ASCII -- smart quotes, em
++    # dashes, or (as actually hit) a narrow no-break space (U+202F).
++    with open(path, "w", encoding="utf-8") as f:
+         f.write(content)
+     return f"WROTE {relative_path} ({len(content)} chars)"
+ 
+ 
+ def read_file(relative_path: str) -> str:
+     path = _safe_path(relative_path)
+-    with open(path, "r") as f:
++    with open(path, "r", encoding="utf-8") as f:
+         return f.read()
+ 
+ 
+-- 
+2.43.0
+

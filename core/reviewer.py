@@ -13,14 +13,18 @@ duplication, obvious bugs, and basic security issues.
 Rules:
 - Be practical, this is an MVP -- do not demand production-grade infrastructure.
 - Respond ONLY with valid JSON, no markdown fences, no preamble.
+- The example below is a JSON SHAPE only -- "app.py" and "short description" are
+  placeholders. Use real file names and real, specific issue descriptions from the
+  files you were actually given.
 - Format:
 {
   "approved": true,
   "issues": [
-    {"file": "app.py", "severity": "warning", "note": "short description"}
+    {"file": "<REAL FILE PATH>", "severity": "warning", "note": "<THE ACTUAL ISSUE, SPECIFIC TO THIS CODE>"}
   ]
 }
 - Set "approved" to false only for real bugs or security problems, not style nitpicks.
+- If there are no real issues, return an empty issues list.
 """
 
 

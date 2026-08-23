@@ -18,16 +18,21 @@ error handling, unclear architecture, missing validation).
 
 Rules:
 - Respond ONLY with valid JSON, no markdown fences, no preamble.
+- The example below shows the JSON SHAPE only -- every value in it is a placeholder you
+  must replace with real content from the actual files you were given. Never return
+  the placeholder text itself.
 - Format:
 {
-  "summary": "one paragraph on what this project is and how it's built",
+  "summary": "<ONE PARAGRAPH: WHAT THIS SPECIFIC PROJECT DOES AND HOW IT'S STRUCTURED>",
   "findings": [
-    {"area": "security", "severity": "high", "note": "short description", "file": "path/if/known"}
+    {"area": "security", "severity": "high", "note": "<THE ACTUAL PROBLEM YOU FOUND, SPECIFIC TO A REAL FILE>", "file": "<REAL FILE PATH, OR OMIT THIS KEY IF UNKNOWN>"}
   ]
 }
 - severity is one of: high, medium, low.
 - Prioritize findings with real impact over style nitpicks.
 - If you cannot tell what a file does from a truncated excerpt, say so instead of guessing.
+- If you have no real findings, return an empty findings list -- do not fill it with
+  the example above.
 """
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", "workspace"}
@@ -35,6 +40,18 @@ TEXT_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".md", ".yml", 
 MAX_FILES = 40
 MAX_FILE_CHARS = 4000
 MAX_TOTAL_CHARS = 60000
+
+# Weaker free-tier models occasionally echo the prompt's own JSON example
+# back verbatim instead of filling it in with real content -- seen live
+# with "short description" / "path/if/known" returned unchanged. These
+# are the exact placeholder strings from the prompt above; anything that
+# matches one gets dropped rather than shown to the user as a real finding.
+_PLACEHOLDER_NOTES = {"short description", "the actual problem you found, specific to a real file"}
+_PLACEHOLDER_FILES = {"path/if/known", "real file path, or omit this key if unknown"}
+_PLACEHOLDER_SUMMARIES = {
+    "one paragraph on what this project is and how it's built",
+    "one paragraph: what this specific project does and how it's structured",
+}
 
 
 def collect_files(repo_path: str) -> dict:
@@ -77,6 +94,21 @@ def audit(repo_path: str) -> dict:
         role="reasoning",
     )
     result["files_scanned"] = len(files)
+
+    # Defense-in-depth against the placeholder-echo failure mode above --
+    # even if a future prompt edit reintroduces natural-sentence examples,
+    # this still catches a model copying them verbatim.
+    if result.get("summary", "").strip().lower() in _PLACEHOLDER_SUMMARIES:
+        result["summary"] = "(model did not produce a real summary for this repository)"
+    real_findings = []
+    for f in result.get("findings", []):
+        note_is_placeholder = f.get("note", "").strip().lower() in _PLACEHOLDER_NOTES
+        file_is_placeholder = f.get("file", "").strip().lower() in _PLACEHOLDER_FILES
+        if note_is_placeholder and (not f.get("file") or file_is_placeholder):
+            continue
+        real_findings.append(f)
+    result["findings"] = real_findings
+
     return result
 
 

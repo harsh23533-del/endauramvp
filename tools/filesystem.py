@@ -24,14 +24,19 @@ def _safe_path(relative_path: str) -> str:
 def write_file(relative_path: str, content: str) -> str:
     path = _safe_path(relative_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    # encoding="utf-8" is required, not optional: on Windows, Python's
+    # default open() encoding is the system locale (often cp1252), which
+    # raises UnicodeEncodeError the moment an LLM response contains a
+    # "fancy" character it favors over plain ASCII -- smart quotes, em
+    # dashes, or (as actually hit) a narrow no-break space (U+202F).
+    with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     return f"WROTE {relative_path} ({len(content)} chars)"
 
 
 def read_file(relative_path: str) -> str:
     path = _safe_path(relative_path)
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 

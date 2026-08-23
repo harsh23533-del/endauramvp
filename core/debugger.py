@@ -16,7 +16,7 @@ Rules:
 - Respond ONLY with valid JSON, no markdown fences, no preamble.
 - Format:
 {
-  "root_cause": "short explanation",
+  "root_cause": "<THE ACTUAL ROOT CAUSE FROM THE TEST OUTPUT AND FILES YOU WERE GIVEN>",
   "patches": {
     "path/to/file.py": "COMPLETE new content of this file"
   }
