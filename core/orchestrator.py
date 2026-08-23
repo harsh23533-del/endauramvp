@@ -31,6 +31,7 @@ from core import metrics
 from core.runtime_agent import check_runtime, format_runtime
 from core.state_machine import StateMachine
 from core.failure_clustering import cluster_failures, format_clusters
+from core.deployment_agent import run_deployment, format_deployment
 from tools.filesystem import write_file, reset_workspace
 from tools.sandbox import run_in_sandbox
 from tools.test_runner import run_tests
@@ -337,7 +338,25 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         print(f"  NOT merged to main -- staying on {build_branch} for review (git checkout {build_branch})")
     report["git_merged"] = merged
 
-    sm.enter("RELEASE_READY" if gate["status"] == "RELEASE_READY" else "BLOCKED")
+    # Phase 8b: merging to main is not "deployed". Only attempt the
+    # deployment pipeline once the build actually made it to main --
+    # production still needs its own approval check inside
+    # deployment_agent, since require_approval may be False for this
+    # build even though production deploy always requires it.
+    deployment = None
+    if merged:
+        sm.enter("DEPLOYING")
+        deployment = run_deployment(
+            project_name=git_tool._slugify(user_request),
+            written_files=written_files,
+            runtime_result=runtime_result,
+            human_approved=bool(human_approved),
+        )
+        report["deployment"] = deployment
+        print("\n" + format_deployment(deployment))
+        sm.enter("DEPLOYED" if deployment["stage"] == "PRODUCTION" else "RELEASE_READY")
+    else:
+        sm.enter("RELEASE_READY" if gate["status"] == "RELEASE_READY" else "BLOCKED")
     report["state_timeline"] = sm.transitions
 
     print("\n--- Documentation Agent: generating README ---")
@@ -367,6 +386,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     if human_approved is not None:
         print(f"Human Approval: {'APPROVED' if human_approved else 'NOT APPROVED'}")
     print(f"Git branch    : {build_branch}{' (merged to main)' if merged else ' (NOT merged -- still on this branch)'}")
+    if deployment:
+        print(f"Deployment    : {deployment['stage']}")
     metrics_result = report["metrics"]
     print(f"LLM calls     : {metrics_result['invocations']} logical / {metrics_result['total_attempts']} attempts, "
           f"{metrics_result['total_latency']}s, {metrics_result['total_tokens']} tokens")

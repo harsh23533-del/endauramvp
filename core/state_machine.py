@@ -6,8 +6,12 @@ statements (PDF section 42).
 
 States: CREATED -> ANALYZING -> PLANNING -> ARCHITECTING -> IMPLEMENTING
         -> TESTING -> DEBUGGING (if needed) -> SECURITY_REVIEW
-        -> QUALITY_REVIEW -> RELEASE_CANDIDATE -> APPROVAL -> DEPLOYED
+        -> QUALITY_REVIEW -> RELEASE_CANDIDATE -> APPROVAL
+        -> DEPLOYING -> DEPLOYED
 Failure states: BLOCKED, FAILED, HUMAN_REVIEW
+(Phase 8b: DEPLOYING/DEPLOYED are only reached if the build merged to
+main AND the deployment agent's production gate passed -- otherwise
+the timeline ends at RELEASE_READY or BLOCKED.)
 """
 import time
 

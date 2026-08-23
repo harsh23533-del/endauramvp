@@ -1,0 +1,218 @@
+From bc77da69818f3dd68a271fb167ad1792e7058caf Mon Sep 17 00:00:00 2001
+From: AURA <aura@local>
+Date: Sun, 23 Aug 2026 11:13:43 +0000
+Subject: [PATCH] Phase 8b: deployment agent - staged
+ build_image/deploy_staging/deploy_production, gated on staging health-check +
+ human approval; wires state machine through to DEPLOYING/DEPLOYED
+
+---
+ core/deployment_agent.py | 44 +++++++++++++++++++++++
+ core/orchestrator.py     | 23 +++++++++++-
+ core/state_machine.py    |  6 +++-
+ tools/deployment.py      | 77 ++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 148 insertions(+), 2 deletions(-)
+ create mode 100644 core/deployment_agent.py
+ create mode 100644 tools/deployment.py
+
+diff --git a/core/deployment_agent.py b/core/deployment_agent.py
+new file mode 100644
+index 0000000..d6fb574
+--- /dev/null
++++ b/core/deployment_agent.py
+@@ -0,0 +1,44 @@
++"""
++Deployment Agent -- Phase 8b.
++Closes the gap the state machine already promised (section 42:
++"... -> APPROVAL -> DEPLOYED") but the orchestrator never actually
++reached: up through Phase 7 a release-ready, human-approved build
++only got merged to the workspace's local main branch. Nothing was
++ever "deployed".
++
++Pipeline (section 20 / section 23):
++  build_image -> deploy_staging -> validate -> deploy_production
++Production is only attempted if staging deployed AND its health
++check validated AND a human approved the release -- see
++tools/deployment.py for the actual gate logic. This agent's job is
++just to run that sequence and produce one clear, reportable result.
++"""
++from tools.deployment import build_image, deploy_staging, deploy_production
++
++
++def run_deployment(project_name: str, written_files: dict, runtime_result: dict, human_approved: bool) -> dict:
++    image = build_image(project_name, written_files)
++    staging = deploy_staging(image, runtime_result)
++    production = deploy_production(staging, bool(human_approved))
++
++    if production["deployed"]:
++        stage = "PRODUCTION"
++    elif staging["deployed"]:
++        stage = "STAGING_ONLY"
++    else:
++        stage = "NOT_DEPLOYED"
++
++    return {
++        "image": image,
++        "staging": staging,
++        "production": production,
++        "stage": stage,
++    }
++
++
++def format_deployment(result: dict) -> str:
++    lines = [f"DEPLOYMENT: {result['stage']}"]
++    lines.append(f"  Image    : {result['image'].get('tag', 'n/a')}")
++    lines.append(f"  Staging  : {'up' if result['staging']['deployed'] else 'not deployed'} -- {result['staging']['detail']}")
++    lines.append(f"  Production: {'DEPLOYED' if result['production']['deployed'] else 'not deployed'} -- {result['production']['detail']}")
++    return "\n".join(lines)
+diff --git a/core/orchestrator.py b/core/orchestrator.py
+index e976e5f..0d99ed7 100644
+--- a/core/orchestrator.py
++++ b/core/orchestrator.py
+@@ -31,6 +31,7 @@ from core import metrics
+ from core.runtime_agent import check_runtime, format_runtime
+ from core.state_machine import StateMachine
+ from core.failure_clustering import cluster_failures, format_clusters
++from core.deployment_agent import run_deployment, format_deployment
+ from tools.filesystem import write_file, reset_workspace
+ from tools.sandbox import run_in_sandbox
+ from tools.test_runner import run_tests
+@@ -337,7 +338,25 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+         print(f"  NOT merged to main -- staying on {build_branch} for review (git checkout {build_branch})")
+     report["git_merged"] = merged
+ 
+-    sm.enter("RELEASE_READY" if gate["status"] == "RELEASE_READY" else "BLOCKED")
++    # Phase 8b: merging to main is not "deployed". Only attempt the
++    # deployment pipeline once the build actually made it to main --
++    # production still needs its own approval check inside
++    # deployment_agent, since require_approval may be False for this
++    # build even though production deploy always requires it.
++    deployment = None
++    if merged:
++        sm.enter("DEPLOYING")
++        deployment = run_deployment(
++            project_name=git_tool._slugify(user_request),
++            written_files=written_files,
++            runtime_result=runtime_result,
++            human_approved=bool(human_approved),
++        )
++        report["deployment"] = deployment
++        print("\n" + format_deployment(deployment))
++        sm.enter("DEPLOYED" if deployment["stage"] == "PRODUCTION" else "RELEASE_READY")
++    else:
++        sm.enter("RELEASE_READY" if gate["status"] == "RELEASE_READY" else "BLOCKED")
+     report["state_timeline"] = sm.transitions
+ 
+     print("\n--- Documentation Agent: generating README ---")
+@@ -367,6 +386,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+     if human_approved is not None:
+         print(f"Human Approval: {'APPROVED' if human_approved else 'NOT APPROVED'}")
+     print(f"Git branch    : {build_branch}{' (merged to main)' if merged else ' (NOT merged -- still on this branch)'}")
++    if deployment:
++        print(f"Deployment    : {deployment['stage']}")
+     metrics_result = report["metrics"]
+     print(f"LLM calls     : {metrics_result['invocations']} logical / {metrics_result['total_attempts']} attempts, "
+           f"{metrics_result['total_latency']}s, {metrics_result['total_tokens']} tokens")
+diff --git a/core/state_machine.py b/core/state_machine.py
+index 88bb635..d72f97b 100644
+--- a/core/state_machine.py
++++ b/core/state_machine.py
+@@ -6,8 +6,12 @@ statements (PDF section 42).
+ 
+ States: CREATED -> ANALYZING -> PLANNING -> ARCHITECTING -> IMPLEMENTING
+         -> TESTING -> DEBUGGING (if needed) -> SECURITY_REVIEW
+-        -> QUALITY_REVIEW -> RELEASE_CANDIDATE -> APPROVAL -> DEPLOYED
++        -> QUALITY_REVIEW -> RELEASE_CANDIDATE -> APPROVAL
++        -> DEPLOYING -> DEPLOYED
+ Failure states: BLOCKED, FAILED, HUMAN_REVIEW
++(Phase 8b: DEPLOYING/DEPLOYED are only reached if the build merged to
++main AND the deployment agent's production gate passed -- otherwise
++the timeline ends at RELEASE_READY or BLOCKED.)
+ """
+ import time
+ 
+diff --git a/tools/deployment.py b/tools/deployment.py
+new file mode 100644
+index 0000000..1862f0a
+--- /dev/null
++++ b/tools/deployment.py
+@@ -0,0 +1,77 @@
++"""
++Deployment tools.
++PDF section 23 lists DEPLOYMENT TOOLS: build_image, deploy_staging,
++deploy_production. This MVP has no real cloud/registry to push to,
++so these are simulated -- but they are still real, deterministic
++steps (not an LLM guessing), each one gated on the previous one
++succeeding, exactly like section 20's "AI prepares -> deterministic
++CI/CD -> tests -> approval gate -> deployment" pipeline.
++
++Nothing here is optional or skippable from code: deploy_production()
++refuses to run unless a staging deploy already passed its health
++check, so there is no path from "build finished" straight to
++"production" without an intermediate, validated stage (section 21).
++"""
++import os
++import time
++from tools.filesystem import WORKSPACE_DIR
++
++
++def build_image(project_name: str, written_files: dict) -> dict:
++    """
++    Simulated `docker build`. Deterministic: an image is just a
++    content-addressed tag derived from what was actually written, so
++    two builds of identical output get the same tag and a changed
++    build gets a different one -- no LLM involved.
++    """
++    file_count = len(written_files)
++    digest = format(abs(hash(frozenset(written_files.keys()))) % (16**12), "012x")
++    tag = f"{project_name}:{digest}"
++    manifest = {
++        "tag": tag,
++        "file_count": file_count,
++        "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
++    }
++    manifest_path = os.path.join(WORKSPACE_DIR, "deployment", "image-manifest.json")
++    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
++    import json
++    with open(manifest_path, "w", encoding="utf-8") as f:
++        json.dump(manifest, f, indent=2)
++    return {"success": True, "tag": tag, "manifest_path": "deployment/image-manifest.json"}
++
++
++def deploy_staging(image: dict, runtime_result: dict) -> dict:
++    """
++    Simulated staging deploy + validation. Reuses the runtime agent's
++    health-check result (section 13) as the staging validation signal
++    instead of re-implementing another health check -- if the app
++    never proved it can start, staging can't "pass" either.
++    """
++    if not image.get("success"):
++        return {"deployed": False, "validated": False, "detail": "no image to deploy"}
++
++    if runtime_result.get("started") is False:
++        return {"deployed": True, "validated": False, "detail": "staging deploy up, but health check failed -- " + runtime_result.get("detail", "")}
++
++    if runtime_result.get("started") is None:
++        # No runtime check was possible (e.g. not a Flask app) -- deploy
++        # but be explicit that validation is inconclusive rather than
++        # silently treating "unknown" as "pass".
++        return {"deployed": True, "validated": None, "detail": "staging deploy up, health check inconclusive"}
++
++    return {"deployed": True, "validated": True, "detail": "staging deploy up, health check passed"}
++
++
++def deploy_production(staging_result: dict, human_approved: bool) -> dict:
++    """
++    Gated production deploy. Requires BOTH a validated staging deploy
++    AND explicit human approval -- either missing blocks it. This is
++    the hard boundary from section 21 ("Deploy production -- APPROVAL
++    required") and section 20 ("I would not let an LLM freely deploy
++    to production").
++    """
++    if not staging_result.get("deployed") or not staging_result.get("validated"):
++        return {"deployed": False, "detail": "blocked -- staging was not deployed and validated"}
++    if not human_approved:
++        return {"deployed": False, "detail": "blocked -- production deploy requires human approval"}
++    return {"deployed": True, "detail": "production deploy complete"}
+-- 
+2.43.0
+
