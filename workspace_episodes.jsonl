@@ -3,3 +3,4 @@
 {"request": "Make a Flask API with a GET /hello endpoint returning JSON", "root_cause": "Missing pytest dependency; tests cannot run because pytest is not installed.", "fix": "patch applied"}
 {"request": "Make me a Flask API with a /hello endpoint", "root_cause": "pytest is not installed; missing from requirements.txt", "fix": "patch applied"}
 {"request": "Build a Flask API with a single /hello endpoint that returns JSON", "root_cause": "The test suite requires pytest to run, but pytest is not listed in requirements.txt, causing the error 'No module named pytest'.", "fix": "patch applied"}
+{"request": "Build a Flask API with a single /hello endpoint that returns JSON", "root_cause": "The test runner fails because pytest is not installed; the requirements.txt file only lists Flask, missing the pytest dependency required to run the tests.", "fix": "patch applied"}
