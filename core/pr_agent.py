@@ -28,6 +28,7 @@ import subprocess
 import time
 from core.audit_agent import audit, format_audit, collect_files
 from core.security import scan as security_scan, format_security
+from core.reviewer import review
 from core.llm import call_claude_json
 
 FIX_SYSTEM_PROMPT = """You are the Fix Engineer agent inside AURA, working against an \
@@ -133,6 +134,12 @@ def run_existing_repo_pipeline(repo_path: str, attempt_pr: bool = True) -> dict:
     sec_result = security_scan({p: files[p] for p in changes_made})
     print(format_security(sec_result))
 
+    # Step 5b -- code review on just the changed files (section 12: the
+    # reviewer's job is to reject bad code, not write it). Runs even
+    # when tests pass -- a passing test suite doesn't rule out a real
+    # bug the tests don't happen to cover.
+    review_result = review({p: files[p] for p in changes_made})
+
     # Step 6 -- commit on the fix branch only.
     _run("git add -A", repo_path)
     commit_msg = "AURA: automated fix\n\n" + "\n".join(explanations)
@@ -154,11 +161,12 @@ def run_existing_repo_pipeline(repo_path: str, attempt_pr: bool = True) -> dict:
         "tests_passed": tests_passed,
         "test_output": (test_result["stdout"] + test_result["stderr"])[-1500:],
         "security": sec_result,
+        "review": review_result,
         "commit": commit_result,
     }
 
     # Step 7 -- gated PR. Same "don't let it ship itself" principle as
-    # the Phase 8b deployment gate: both conditions must hold, and the
+    # the Phase 8b deployment gate: all conditions must hold, and the
     # caller can also opt out of PR creation entirely via attempt_pr.
     reasons_blocked = []
     if not attempt_pr:
@@ -167,6 +175,8 @@ def run_existing_repo_pipeline(repo_path: str, attempt_pr: bool = True) -> dict:
         reasons_blocked.append("tests failed")
     if sec_result.get("high_count", 0):
         reasons_blocked.append("high-severity security finding introduced")
+    if review_result.get("approved") is False:
+        reasons_blocked.append("reviewer rejected the change")
 
     if not reasons_blocked:
         pr_result = _try_create_pr(repo_path, branch_name, orig_branch, commit_msg)
@@ -214,6 +224,8 @@ def format_pipeline_report(report: dict) -> str:
     lines.append(f"  Tests         : {'PASS' if report.get('tests_passed') else 'FAIL'} ({report.get('test_command')})")
     sec = report.get("security", {})
     lines.append(f"  Security      : {sec.get('high_count', 0)} high, {sec.get('medium_count', 0)} medium")
+    rev = report.get("review", {})
+    lines.append(f"  Review        : {'APPROVED' if rev.get('approved') else 'CHANGES REQUESTED'}")
     pr = report.get("pr", {})
     lines.append(f"  Pull Request  : {'created -- ' if pr.get('created') else 'NOT created -- '}{pr.get('detail', '')}")
     return "\n".join(lines)
