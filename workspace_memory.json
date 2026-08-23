@@ -5,15 +5,51 @@
       "framework": "flask"
     },
     "needs_database": false,
-    "notes": "Flask is lightweight and sufficient for a simple API endpoint; no database needed for a static hello response.",
+    "notes": "Flask is the direct match for the request; minimal setup, zero extra dependencies, and trivial to implement a single JSON endpoint.",
+    "score": 95,
     "alternatives_considered": [
       {
-        "stack": "Node/Express",
-        "reason_rejected": "More boilerplate for a trivial endpoint; Python/Flask is quicker to set up."
+        "stack": {
+          "language": "python",
+          "framework": "fastapi"
+        },
+        "reason_rejected": "scored 85 vs chosen 95 -- FastAPI offers automatic OpenAPI docs and async support, but adds a bit more complexity than needed for a simple hello endpoint."
       },
       {
-        "stack": "FastAPI",
-        "reason_rejected": "Adds async capabilities unnecessary for this basic use case."
+        "stack": {
+          "language": "node",
+          "framework": "express"
+        },
+        "reason_rejected": "scored 70 vs chosen 95 -- Express can serve the endpoint easily, but requires managing a Node environment and npm packages, increasing overhead for this trivial task."
+      }
+    ],
+    "candidates": [
+      {
+        "stack": {
+          "language": "python",
+          "framework": "flask"
+        },
+        "needs_database": false,
+        "notes": "Flask is the direct match for the request; minimal setup, zero extra dependencies, and trivial to implement a single JSON endpoint.",
+        "score": 95
+      },
+      {
+        "stack": {
+          "language": "python",
+          "framework": "fastapi"
+        },
+        "needs_database": false,
+        "notes": "FastAPI offers automatic OpenAPI docs and async support, but adds a bit more complexity than needed for a simple hello endpoint.",
+        "score": 85
+      },
+      {
+        "stack": {
+          "language": "node",
+          "framework": "express"
+        },
+        "needs_database": false,
+        "notes": "Express can serve the endpoint easily, but requires managing a Node environment and npm packages, increasing overhead for this trivial task.",
+        "score": 70
       }
     ]
   },
@@ -27,6 +63,8 @@
     "Make me a Flask API with a /hello endpoint",
     "Make a Flask API with a GET /hello endpoint returning JSON",
     "Make me a Flask API with a /hello endpoint",
-    "Make me a Flask API with a /hello endpoint"
+    "Make me a Flask API with a /hello endpoint",
+    "Build a Flask API with a single /hello endpoint that returns JSON",
+    "Build a Flask API with a single /hello endpoint that returns JSON"
   ]
 }

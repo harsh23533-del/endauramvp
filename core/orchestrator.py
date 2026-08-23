@@ -384,6 +384,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         print(f"Infra issue   : {infra_error} (fix your environment, then re-run)")
     print(f"Debug attempts: {debug_attempts} ({patches_rejected} rejected as regressions)")
     print(f"Security      : {'PASS' if security_result['passed'] and dependency_result['passed'] else 'HIGH-SEVERITY ISSUES'}")
+    print(f"Runtime       : {'STARTED' if runtime_result.get('started') else ('FAILED TO START' if runtime_result.get('started') is False else 'not checked')}")
     print(f"Review        : {'APPROVED' if review_result.get('approved') else 'CHANGES REQUESTED'}")
     print(f"Critic        : {critic_result.get('verdict', 'unknown')}")
     print(f"Release Gate  : {gate['status']}")

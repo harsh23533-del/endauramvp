@@ -37,6 +37,16 @@ def evaluate_release(report: dict) -> dict:
     if critic_result.get("verdict") == "breaks_easily":
         reasons.append("Critic found the implementation breaks easily.")
 
+    # This was missing entirely -- runtime_result was computed and logged
+    # (section 13's Runtime Agent) but never actually fed into the gate,
+    # so an app that fails to even start could still reach RELEASE_READY
+    # as long as its unit tests happened to pass. started is False for a
+    # confirmed failure to start; None means the check was inconclusive
+    # (e.g. not a Flask app) and shouldn't block on its own.
+    runtime_result = report.get("runtime_result", {})
+    if runtime_result.get("started") is False:
+        reasons.append(f"App failed to start at runtime: {runtime_result.get('detail', '(no detail)')}")
+
     infra_error = report.get("infra_error")
     if infra_error:
         reasons.append(f"Infrastructure issue: {infra_error}")
