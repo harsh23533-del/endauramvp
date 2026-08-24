@@ -129,7 +129,16 @@ def merge_to_main(branch_name: str) -> dict:
     pattern, applied to git instead of a deploy pipeline.
     """
     run_command(f"git checkout -q {MAIN_BRANCH}")
-    result = run_command(
-        f"git merge -q --no-ff {branch_name} -m 'Merge {branch_name}: release-ready build'"
-    )
+
+    # Message written to a temp file and passed via -F, same pattern as
+    # commit() -- avoids shell quoting differences (e.g. cmd.exe on
+    # Windows doesn't treat single quotes as a string delimiter, which
+    # let a stray "<branch>:" token leak through as an extra merge
+    # argument and get resolved via git's <rev>:<path> tree syntax).
+    msg_path = os.path.join(WORKSPACE_DIR, _COMMIT_MSG_FILE)
+    with open(msg_path, "w", encoding="utf-8") as f:
+        f.write(f"Merge {branch_name}: release-ready build")
+
+    result = run_command(f"git merge -q --no-ff {branch_name} -F {_COMMIT_MSG_FILE}")
+    os.remove(msg_path)
     return result
