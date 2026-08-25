@@ -29,29 +29,32 @@ from core import metrics
 #   1) set OPENROUTER_MODEL in your .env to a different ":free" model
 #      from https://openrouter.ai/models?max_price=0, or
 #   2) change the default below.
-DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+# Verified live against https://openrouter.ai/api/v1/models on 2026-08-26 --
+# every model previously hardcoded here had been removed from the free
+# catalog entirely (confirmed via a live fetch, not guessed).
+DEFAULT_MODEL = "thinkingmachines/inkling:free"
 
 # Verified-live free models (confirmed working via OpenRouter's live
-# model list) used as automatic fallbacks when the primary model hits
-# its daily rate limit or is temporarily unavailable.
+# model list, 2026-08-26) used as automatic fallbacks when the primary
+# model hits its daily rate limit or is temporarily unavailable.
 FALLBACK_CANDIDATES = [
-    "openai/gpt-oss-20b:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "z-ai/glm-5.2:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nvidia/nemotron-nano-9b-v2:free",
+    "poolside/laguna-s-2.1:free",
+    "thinkingmachines/inkling-small:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "poolside/laguna-xs-2.1:free",
+    "liquid/lfm-2.5-2.6b:free",
 ]
 
 # Model router (section 39): which env var and default each role
-# resolves to. All three default to the same free model today because
-# that's what's actually available for free on OpenRouter -- the
-# routing mechanism is real, the model *diversity* is limited by what
-# the free tier offers. Set any of these in .env to point a role at a
-# genuinely different model as better free (or paid) options show up.
+# resolves to. Picks matched to what each free model is actually good at
+# (per OpenRouter's own listing) rather than reusing one model for
+# everything: laguna-s-2.1 is purpose-built as a coding-agent model,
+# nemotron-3.5-lightning is a small, fast model meant for high-throughput
+# lightweight work.
 ROLE_DEFAULTS = {
-    "reasoning": ("OPENROUTER_MODEL_REASONING", DEFAULT_MODEL),  # architecture, debugging, planning
-    "coding":    ("OPENROUTER_MODEL_CODING", DEFAULT_MODEL),     # code generation, refactoring
-    "fast":      ("OPENROUTER_MODEL_FAST", "nvidia/nemotron-nano-9b-v2:free"),  # classification, routing, extraction
+    "reasoning": ("OPENROUTER_MODEL_REASONING", DEFAULT_MODEL),           # architecture, debugging, planning
+    "coding":    ("OPENROUTER_MODEL_CODING", "poolside/laguna-s-2.1:free"),  # code generation, refactoring
+    "fast":      ("OPENROUTER_MODEL_FAST", "nvidia/nemotron-3.5-lightning:free"),  # classification, routing, extraction
 }
 
 _client = None
