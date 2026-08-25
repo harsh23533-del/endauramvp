@@ -106,6 +106,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
             )
             write_file(task["path"], content)
             written_files[task["path"]] = content
+            log_event("file_written", "completed", task["path"], files_changed=[task["path"]])
     log_event("coder", "completed", f"{len(written_files)} files written",
               files_changed=list(written_files.keys()))
 
@@ -193,6 +194,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
             print(f"  patching {path} ...")
             write_file(path, content)
             written_files[path] = content
+            log_event("file_written", "completed", f"{path} (patch)", files_changed=[path])
 
         print("--- Tester: re-running pytest (sandboxed) ---")
         new_test_result = run_tests()

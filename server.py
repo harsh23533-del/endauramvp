@@ -252,6 +252,41 @@ def job_events(job_id: str, x_access_code: str | None = Header(default=None)):
     return {"events": _read_workspace_events(), "live": True}
 
 
+@app.get("/api/jobs/{job_id}/file")
+def job_file(job_id: str, path: str, x_access_code: str | None = Header(default=None)):
+    """
+    Returns the current on-disk content of one generated file, so the
+    frontend can show real code as it's written (not a simulation) --
+    read directly from the live workspace while the job is running, from
+    the completed job's report once it's done. Path is confined to the
+    workspace directory, same as tools/filesystem.py's own guard.
+    """
+    _require_access(x_access_code)
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Unknown job id.")
+    full_path = os.path.abspath(os.path.join(WORKSPACE_DIR, path))
+    if not full_path.startswith(os.path.abspath(WORKSPACE_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    if job["status"] in ("done", "error"):
+        # Workspace may already be reused by a later build -- fall back to
+        # the archived zip for this job instead.
+        archive = job.get("archive")
+        if archive and os.path.exists(archive):
+            try:
+                with zipfile.ZipFile(archive) as zf:
+                    with zf.open(path.replace("\\", "/")) as f:
+                        return {"path": path, "content": f.read().decode("utf-8", errors="replace")}
+            except KeyError:
+                raise HTTPException(status_code=404, detail="File not found in archive.")
+        raise HTTPException(status_code=404, detail="Job finished and no archive is available.")
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="File not written yet.")
+    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+        return {"path": path, "content": f.read()}
+
+
 @app.get("/api/jobs/{job_id}/download")
 def job_download(job_id: str, x_access_code: str | None = Header(default=None)):
     _require_access(x_access_code)
@@ -314,6 +349,12 @@ _INDEX_HTML = """<!doctype html>
   #ops .st-completed { color: #3fb950; }
   #ops .st-failed { color: #f85149; }
   #ops .st-skipped { color: #999; }
+
+  #codePanel { display: none; margin-top: 14px; }
+  #codePanel .filename { font-size: 12px; color: #555; margin-bottom: 4px; font-family: monospace; }
+  #codeView { background: #0d1117; color: #d2d6db; padding: 12px 14px; border-radius: 6px; max-height: 320px; overflow: auto; font-size: 12.5px; font-family: "SF Mono", Consolas, monospace; white-space: pre; }
+  #codeView .cursor { display: inline-block; width: 7px; background: #58a6ff; animation: blink 0.8s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
 </style>
 </head>
 <body>
@@ -340,6 +381,11 @@ _INDEX_HTML = """<!doctype html>
     <div class="labels" id="labels"></div>
   </div>
 
+  <div id="codePanel">
+    <div class="filename" id="filename"></div>
+    <div id="codeView"></div>
+  </div>
+
   <div id="ops"></div>
 
   <pre id="log" style="display:none"></pre>
@@ -356,6 +402,9 @@ const labelsEl = document.getElementById('labels');
 const lineFillEl = document.getElementById('lineFill');
 const markerEl = document.getElementById('marker');
 const opsEl = document.getElementById('ops');
+const codePanelEl = document.getElementById('codePanel');
+const codeViewEl = document.getElementById('codeView');
+const filenameEl = document.getElementById('filename');
 
 // Fixed pipeline order (matches core/orchestrator.py's log_event() call
 // sequence). Stages not in this list (e.g. "database", "issue_agent") only
@@ -380,6 +429,48 @@ STAGES.forEach(([stage, icon]) => {
 });
 
 let seenOps = 0;
+let currentJobId = null;
+let currentCode = null;
+const fileQueue = [];
+const queuedPaths = new Set();
+let typing = false;
+
+async function maybeStartTyping() {
+  if (typing || fileQueue.length === 0 || !currentJobId || !currentCode) return;
+  typing = true;
+  const path = fileQueue.shift();
+  filenameEl.textContent = path;
+  codeViewEl.textContent = '';
+  let content = '';
+  try {
+    const res = await fetch('/api/jobs/' + currentJobId + '/file?path=' + encodeURIComponent(path),
+      { headers: { 'X-Access-Code': currentCode } });
+    if (res.ok) content = (await res.json()).content || '';
+  } catch (e) { /* file may not be readable yet -- just skip the animation for it */ }
+
+  if (!content) { typing = false; maybeStartTyping(); return; }
+
+  const totalTicks = 160; // animate any file length in roughly the same ~3s
+  const chunkSize = Math.max(1, Math.ceil(content.length / totalTicks));
+  let i = 0;
+  const cursor = '<span class="cursor">&nbsp;</span>';
+  const iv = setInterval(() => {
+    i += chunkSize;
+    const shown = content.slice(0, i);
+    codeViewEl.innerHTML = escapeHtml(shown) + cursor;
+    codeViewEl.scrollTop = codeViewEl.scrollHeight;
+    if (i >= content.length) {
+      clearInterval(iv);
+      codeViewEl.innerHTML = escapeHtml(content);
+      typing = false;
+      setTimeout(maybeStartTyping, 300);
+    }
+  }, 15);
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 function renderPipeline(events) {
   const stageIndex = {};
@@ -420,9 +511,18 @@ function renderPipeline(events) {
       + '<span class="st-' + ev.status + '">' + ev.status + '</span>'
       + (ev.detail ? ' — ' + ev.detail : '');
     opsEl.appendChild(row);
+
+    if (ev.stage === 'file_written' && ev.status === 'completed' && ev.detail) {
+      const path = ev.detail.replace(' (patch)', '');
+      if (!queuedPaths.has(ev.detail)) {
+        queuedPaths.add(ev.detail);
+        fileQueue.push(path);
+      }
+    }
   }
   seenOps = events.length;
   opsEl.scrollTop = opsEl.scrollHeight;
+  maybeStartTyping();
 }
 
 function resetPipeline() {
@@ -430,6 +530,11 @@ function resetPipeline() {
   opsEl.innerHTML = '';
   lineFillEl.style.width = '0%';
   markerEl.style.left = '0px';
+  fileQueue.length = 0;
+  queuedPaths.clear();
+  typing = false;
+  filenameEl.textContent = '';
+  codeViewEl.textContent = '';
   document.querySelectorAll('.node').forEach(n => n.classList.remove('active', 'done', 'failed'));
 }
 
@@ -443,6 +548,8 @@ go.onclick = async () => {
   logEl.textContent = '';
   pipelineEl.style.display = 'block';
   opsEl.style.display = 'block';
+  codePanelEl.style.display = 'block';
+  currentCode = code;
   resetPipeline();
   statusLine.textContent = 'Submitting...';
   try {
@@ -461,6 +568,7 @@ go.onclick = async () => {
 };
 
 async function poll(jobId, code) {
+  currentJobId = jobId;
   statusLine.textContent = 'Status: queued...';
   const iv = setInterval(async () => {
     const [statusRes, eventsRes] = await Promise.all([
