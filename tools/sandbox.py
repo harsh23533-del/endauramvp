@@ -1,20 +1,129 @@
 """
 Sandbox tool.
-Runs shell commands inside an isolated Docker container instead of the
-host machine, with the workspace directory mounted in.
+Runs shell commands inside an isolated Docker container when a Docker
+daemon is available, with the workspace directory mounted in.
+
+Hosted PaaS environments (Render, Railway, etc.) generally run the app
+itself inside a container and do NOT expose a Docker daemon to it, so
+`docker run` simply isn't reachable there. Rather than fail hard, this
+falls back to a still-guarded direct subprocess (workspace-locked cwd,
+timeout, BLOCKED_PATTERNS + permission matrix, resource limits via
+`resource.setrlimit` on POSIX) so the same code path works locally
+(full container isolation) and when hosted (host-level isolation).
+Set AURA_FORCE_SUBPROCESS_SANDBOX=1 to always use the fallback even if
+Docker happens to be present (useful for testing the hosted path).
 """
+import os
+import shutil
 import subprocess
+import sys
 from tools.filesystem import WORKSPACE_DIR
 from tools.permissions import check as check_permission
 
 IMAGE_NAME = "aura-sandbox"
 DEFAULT_TIMEOUT = 120
 
+try:
+    import resource  # POSIX only
+except ImportError:
+    resource = None
+
+# Cap on generated-project subprocess memory (bytes) when Docker isn't
+# available to enforce it for us. 512MB, matching the docker --memory flag.
+_FALLBACK_MEM_LIMIT_BYTES = 512 * 1024 * 1024
+
+
+def _docker_available() -> bool:
+    if os.environ.get("AURA_FORCE_SUBPROCESS_SANDBOX") == "1":
+        return False
+    if shutil.which("docker") is None:
+        return False
+    try:
+        subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=5, check=False
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _limit_resources():
+    """preexec_fn: apply memory/process limits to the child (POSIX only)."""
+    if resource is None:
+        return
+    try:
+        resource.setrlimit(
+            resource.RLIMIT_AS, (_FALLBACK_MEM_LIMIT_BYTES, _FALLBACK_MEM_LIMIT_BYTES)
+        )
+        resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
+    except Exception:
+        pass  # best-effort; never block the run over a limit that couldn't be set
+
+
+def _run_in_docker(command: str, timeout: int) -> dict:
+    docker_command = [
+        "docker", "run", "--rm",
+        "-v", f"{WORKSPACE_DIR}:/workspace",
+        "-w", "/workspace",
+        "--memory", "512m",
+        "--cpus", "1",
+        "--network", "none",
+        IMAGE_NAME,
+        "sh", "-c", command,
+    ]
+    result = subprocess.run(
+        docker_command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    return {
+        "command": command,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "exit_code": result.returncode,
+    }
+
+
+def _run_in_subprocess_fallback(command: str, timeout: int) -> dict:
+    """Host-level fallback used when no Docker daemon is reachable."""
+    if command.startswith("pip "):
+        command = f'"{sys.executable}" -m pip ' + command[len("pip "):]
+    kwargs = dict(
+        shell=True,
+        cwd=WORKSPACE_DIR,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    if resource is not None:
+        kwargs["preexec_fn"] = _limit_resources
+    try:
+        result = subprocess.run(command, **kwargs)
+        return {
+            "command": command,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+        }
+    except MemoryError:
+        return {
+            "command": command,
+            "stdout": "",
+            "stderr": "Process exceeded the memory limit and was stopped.",
+            "exit_code": -1,
+        }
+
 
 def run_in_sandbox(command: str, timeout: int = DEFAULT_TIMEOUT, agent: str = None, capability: str = None) -> dict:
     """
-    Run a shell command inside a throwaway Docker container.
-    The workspace directory is mounted at /workspace inside the container.
+    Run a shell command in an isolated environment: a throwaway Docker
+    container when Docker is reachable, otherwise a guarded, resource-
+    limited subprocess confined to the workspace directory.
 
     agent/capability are optional (PDF section 24) -- omitted means only
     the global BLOCKED_PATTERNS guard applies, unchanged from before.
@@ -28,30 +137,10 @@ def run_in_sandbox(command: str, timeout: int = DEFAULT_TIMEOUT, agent: str = No
             "exit_code": -1,
         }
 
-    docker_command = [
-        "docker", "run", "--rm",
-        "-v", f"{WORKSPACE_DIR}:/workspace",
-        "-w", "/workspace",
-        "--memory", "512m",
-        "--cpus", "1",
-        IMAGE_NAME,
-        "sh", "-c", command,
-    ]
     try:
-        result = subprocess.run(
-            docker_command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-        return {
-            "command": command,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exit_code": result.returncode,
-        }
+        if _docker_available():
+            return _run_in_docker(command, timeout)
+        return _run_in_subprocess_fallback(command, timeout)
     except subprocess.TimeoutExpired:
         return {
             "command": command,
@@ -63,6 +152,6 @@ def run_in_sandbox(command: str, timeout: int = DEFAULT_TIMEOUT, agent: str = No
         return {
             "command": command,
             "stdout": "",
-            "stderr": "Docker not found. Install Docker Desktop and make sure it's running.",
+            "stderr": "Neither Docker nor a usable shell was found to execute the command.",
             "exit_code": -1,
         }

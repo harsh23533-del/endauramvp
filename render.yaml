@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: aura-mvp
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: ACCESS_CODE
+        sync: false
+      - key: RATE_LIMIT_MAX
+        value: "5"
+      - key: RATE_LIMIT_WINDOW
+        value: "3600"
+      - key: AURA_FORCE_SUBPROCESS_SANDBOX
+        value: "1"
