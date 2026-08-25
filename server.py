@@ -329,18 +329,22 @@ _INDEX_HTML = """<!doctype html>
   label { font-size: 13px; color: #555; display: block; margin-top: 12px; margin-bottom: 4px; }
 
   #pipeline { display: none; margin-top: 24px; }
-  .track { position: relative; height: 54px; margin: 0 6px 6px; }
-  .track .line { position: absolute; top: 17px; left: 0; right: 0; height: 4px; background: #e5e5e5; border-radius: 2px; }
-  .track .line-fill { position: absolute; top: 17px; left: 0; height: 4px; background: #111; border-radius: 2px; transition: width 0.5s ease; width: 0%; }
-  .nodes { display: flex; justify-content: space-between; position: relative; }
-  .node { width: 38px; height: 38px; border-radius: 50%; background: #fff; border: 3px solid #e5e5e5; display: flex; align-items: center; justify-content: center; font-size: 15px; z-index: 2; transition: border-color 0.3s, background 0.3s; }
+  .vtrack { position: relative; padding-left: 4px; }
+  .vline { position: absolute; left: 21px; top: 4px; bottom: 4px; width: 4px; background: #e5e5e5; border-radius: 2px; }
+  .vline-fill { position: absolute; left: 21px; top: 4px; width: 4px; background: #111; border-radius: 2px; transition: height 0.5s ease; height: 0px; }
+  .vnodes { position: relative; z-index: 2; }
+  .vnode-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; cursor: pointer; border-radius: 8px; }
+  .vnode-row:hover { background: #f7f7f7; }
+  .vnode-row.selected { background: #eef2ff; }
+  .node { flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%; background: #fff; border: 3px solid #e5e5e5; display: flex; align-items: center; justify-content: center; font-size: 15px; transition: border-color 0.3s, background 0.3s; }
   .node.done { border-color: #111; background: #111; color: #fff; }
   .node.active { border-color: #d97706; background: #fff7ed; animation: pulse 1s infinite; }
   .node.failed { border-color: #dc2626; background: #fef2f2; }
   @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(217,119,6,0.35); } 50% { box-shadow: 0 0 0 6px rgba(217,119,6,0); } }
-  .marker { position: absolute; top: 4px; width: 20px; height: 20px; font-size: 16px; transform: translateX(-50%); transition: left 0.6s ease; z-index: 3; }
-  .labels { display: flex; justify-content: space-between; margin-top: 4px; }
-  .labels span { font-size: 10px; color: #777; width: 46px; text-align: center; transform: translateX(-4px); }
+  .marker { position: absolute; left: 12px; width: 20px; height: 20px; font-size: 16px; transition: top 0.6s ease; z-index: 3; }
+  .vnode-label { font-size: 13px; color: #444; }
+  .vnode-row.done .vnode-label { color: #111; font-weight: 500; }
+  .vnode-hint { font-size: 10.5px; color: #999; margin-left: auto; }
 
   #ops { display: none; background: #0d1117; color: #c9d1d9; padding: 12px 14px; border-radius: 6px; max-height: 220px; overflow-y: auto; font-size: 12.5px; margin-top: 14px; }
   #ops .op { padding: 3px 0; border-bottom: 1px solid #1f2937; }
@@ -351,8 +355,9 @@ _INDEX_HTML = """<!doctype html>
   #ops .st-skipped { color: #999; }
 
   #codePanel { display: none; margin-top: 14px; }
-  #codePanel .filename { font-size: 12px; color: #555; margin-bottom: 4px; font-family: monospace; }
-  #codeView { background: #0d1117; color: #d2d6db; padding: 12px 14px; border-radius: 6px; max-height: 320px; overflow: auto; font-size: 12.5px; font-family: "SF Mono", Consolas, monospace; white-space: pre; }
+  #codePanel .filename { font-size: 12.5px; color: #333; margin-bottom: 6px; font-family: monospace; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  #codePanel .fileBtn { font-size: 11px; padding: 3px 8px; margin-top: 2px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background: #fff; }
+  #codeView { background: #0d1117; color: #d2d6db; padding: 12px 14px; border-radius: 6px; max-height: 340px; overflow: auto; font-size: 12.5px; font-family: "SF Mono", Consolas, monospace; white-space: pre-wrap; }
   #codeView .cursor { display: inline-block; width: 7px; background: #58a6ff; animation: blink 0.8s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 </style>
@@ -372,13 +377,12 @@ _INDEX_HTML = """<!doctype html>
   <div id="statusLine" class="status"></div>
 
   <div id="pipeline">
-    <div class="track">
-      <div class="line"></div>
-      <div class="line-fill" id="lineFill"></div>
-      <div class="nodes" id="nodes"></div>
+    <div class="vtrack">
+      <div class="vline"></div>
+      <div class="vline-fill" id="lineFill"></div>
+      <div class="vnodes" id="nodes"></div>
       <div class="marker" id="marker">🤖</div>
     </div>
-    <div class="labels" id="labels"></div>
   </div>
 
   <div id="codePanel">
@@ -398,7 +402,6 @@ const logEl = document.getElementById('log');
 const dlEl = document.getElementById('dl');
 const pipelineEl = document.getElementById('pipeline');
 const nodesEl = document.getElementById('nodes');
-const labelsEl = document.getElementById('labels');
 const lineFillEl = document.getElementById('lineFill');
 const markerEl = document.getElementById('marker');
 const opsEl = document.getElementById('ops');
@@ -416,30 +419,118 @@ const STAGES = [
   ['dependency_scan', '📦'], ['runtime', '▶️'], ['reviewer', '👀'],
   ['critic', '🧐'], ['documentation', '📝'],
 ];
+const STAGE_ICON = Object.fromEntries(STAGES);
+const STATUS_EMOJI = { completed: '✅', failed: '❌', skipped: '⏭️' };
 
 STAGES.forEach(([stage, icon]) => {
+  const row = document.createElement('div');
+  row.className = 'vnode-row';
+  row.id = 'row-' + stage;
+  row.onclick = () => selectStage(stage);
   const node = document.createElement('div');
   node.className = 'node';
   node.id = 'node-' + stage;
   node.textContent = icon;
-  nodesEl.appendChild(node);
   const label = document.createElement('span');
-  label.textContent = stage;
-  labelsEl.appendChild(label);
+  label.className = 'vnode-label';
+  label.textContent = stage.replace('_', ' ');
+  const hint = document.createElement('span');
+  hint.className = 'vnode-hint';
+  hint.textContent = 'tap to view';
+  row.appendChild(node);
+  row.appendChild(label);
+  row.appendChild(hint);
+  nodesEl.appendChild(row);
 });
 
 let seenOps = 0;
 let currentJobId = null;
 let currentCode = null;
+let stageData = {};
+let selectedStage = null;
 const fileQueue = [];
 const queuedPaths = new Set();
 let typing = false;
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Groups events into per-stage data: {status, detail, files: [paths]}.
+// file_written events precede the stage-completion event they belong to
+// (coder writes files, then logs "coder completed"; same for debugger
+// patches), so a pending-files buffer gets attached to the next real
+// stage event encountered.
+function computeStageData(events) {
+  const data = {};
+  STAGES.forEach(([s]) => data[s] = { status: 'pending', detail: null, files: [] });
+  let pending = [];
+  events.forEach(ev => {
+    if (ev.stage === 'file_written' && ev.status === 'completed' && ev.detail) {
+      pending.push(ev.detail.replace(' (patch)', ''));
+      return;
+    }
+    if (data[ev.stage] !== undefined) {
+      data[ev.stage] = { status: ev.status, detail: ev.detail, files: pending.slice() };
+      pending = [];
+    }
+  });
+  return data;
+}
+
+async function selectStage(stage) {
+  const info = stageData[stage];
+  if (!info || info.status === 'pending') return; // nothing to show yet
+  selectedStage = stage;
+  document.querySelectorAll('.vnode-row').forEach(r => r.classList.remove('selected'));
+  document.getElementById('row-' + stage).classList.add('selected');
+  codePanelEl.style.display = 'block';
+
+  if (info.files && info.files.length > 0) {
+    await showFileInPanel(stage, info.files, 0);
+  } else {
+    const icon = STAGE_ICON[stage] || '🔎';
+    const emoji = STATUS_EMOJI[info.status] || '';
+    filenameEl.innerHTML = '<span>' + icon + ' ' + stage.replace('_', ' ') + ' ' + emoji + '</span>';
+    codeViewEl.textContent = info.detail || '(no output recorded for this stage)';
+  }
+}
+
+async function showFileInPanel(stage, files, idx) {
+  const path = files[idx];
+  const icon = STAGE_ICON[stage] || '💻';
+  filenameEl.innerHTML = '';
+  const header = document.createElement('span');
+  header.textContent = icon + ' ' + stage.replace('_', ' ') + ' — ' + path;
+  filenameEl.appendChild(header);
+  files.forEach((f, i) => {
+    if (files.length < 2) return;
+    const btn = document.createElement('button');
+    btn.className = 'fileBtn';
+    btn.textContent = '📄 ' + f.split('/').pop();
+    btn.onclick = (e) => { e.stopPropagation(); showFileInPanel(stage, files, i); };
+    filenameEl.appendChild(btn);
+  });
+  codeViewEl.textContent = '⏳ loading...';
+  try {
+    const res = await fetch('/api/jobs/' + currentJobId + '/file?path=' + encodeURIComponent(path),
+      { headers: { 'X-Access-Code': currentCode } });
+    if (res.ok) {
+      const data = await res.json();
+      codeViewEl.textContent = data.content || '(empty file)';
+    } else {
+      codeViewEl.textContent = '⚠️ ' + (await res.json()).detail;
+    }
+  } catch (e) {
+    codeViewEl.textContent = '⚠️ error loading file: ' + e;
+  }
+}
 
 async function maybeStartTyping() {
   if (typing || fileQueue.length === 0 || !currentJobId || !currentCode) return;
   typing = true;
   const path = fileQueue.shift();
-  filenameEl.textContent = path;
+  filenameEl.innerHTML = '<span>✍️ writing ' + path + ' ...</span>';
   codeViewEl.textContent = '';
   let content = '';
   try {
@@ -462,14 +553,11 @@ async function maybeStartTyping() {
     if (i >= content.length) {
       clearInterval(iv);
       codeViewEl.innerHTML = escapeHtml(content);
+      filenameEl.innerHTML = '<span>✅ ' + path + '</span>';
       typing = false;
       setTimeout(maybeStartTyping, 300);
     }
   }, 15);
-}
-
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function renderPipeline(events) {
@@ -482,9 +570,11 @@ function renderPipeline(events) {
     const idx = stageIndex[ev.stage];
     if (idx === undefined) return;
     const node = document.getElementById('node-' + ev.stage);
+    const row = document.getElementById('row-' + ev.stage);
     node.classList.remove('active', 'done', 'failed');
+    row.classList.remove('done');
     if (ev.status === 'failed') { node.classList.add('failed'); anyFailed = true; }
-    else { node.classList.add('done'); }
+    else { node.classList.add('done'); row.classList.add('done'); }
     if (idx > lastKnownIndex) lastKnownIndex = idx;
   });
 
@@ -496,18 +586,26 @@ function renderPipeline(events) {
     if (nextNode && !nextNode.classList.contains('done')) nextNode.classList.add('active');
   }
 
-  const pct = STAGES.length > 1 ? (lastKnownIndex / (STAGES.length - 1)) * 100 : 0;
-  lineFillEl.style.width = Math.max(0, pct) + '%';
-  const nodeWidth = nodesEl.offsetWidth || 1;
-  const markerPct = STAGES.length > 1 ? (Math.max(0, lastKnownIndex) / (STAGES.length - 1)) : 0;
-  markerEl.style.left = (markerPct * nodeWidth) + 'px';
+  // Marker + line-fill track the vertical center of the last-completed node,
+  // measured directly from the DOM so it's correct regardless of label wrap.
+  if (lastKnownIndex >= 0) {
+    const targetNode = document.getElementById('node-' + STAGES[lastKnownIndex][0]);
+    const containerTop = nodesEl.getBoundingClientRect().top;
+    const targetRect = targetNode.getBoundingClientRect();
+    const centerY = targetRect.top - containerTop + targetRect.height / 2;
+    lineFillEl.style.height = Math.max(0, centerY) + 'px';
+    markerEl.style.top = Math.max(0, centerY - 10) + 'px';
+  }
+
+  stageData = computeStageData(events);
 
   // Operations feed: append only new events since last render.
   for (let i = seenOps; i < events.length; i++) {
     const ev = events[i];
     const row = document.createElement('div');
     row.className = 'op';
-    row.innerHTML = '<span class="stage">' + ev.stage + '</span> '
+    const emoji = STATUS_EMOJI[ev.status] || '•';
+    row.innerHTML = emoji + ' <span class="stage">' + ev.stage + '</span> '
       + '<span class="st-' + ev.status + '">' + ev.status + '</span>'
       + (ev.detail ? ' — ' + ev.detail : '');
     opsEl.appendChild(row);
@@ -522,20 +620,25 @@ function renderPipeline(events) {
   }
   seenOps = events.length;
   opsEl.scrollTop = opsEl.scrollHeight;
-  maybeStartTyping();
+  // Don't fight a manual click with the auto-typewriter -- only auto-advance
+  // when nobody is deliberately browsing a specific stage's code.
+  if (!selectedStage) maybeStartTyping();
 }
 
 function resetPipeline() {
   seenOps = 0;
   opsEl.innerHTML = '';
-  lineFillEl.style.width = '0%';
-  markerEl.style.left = '0px';
+  lineFillEl.style.height = '0px';
+  markerEl.style.top = '0px';
   fileQueue.length = 0;
   queuedPaths.clear();
   typing = false;
+  stageData = {};
+  selectedStage = null;
   filenameEl.textContent = '';
   codeViewEl.textContent = '';
   document.querySelectorAll('.node').forEach(n => n.classList.remove('active', 'done', 'failed'));
+  document.querySelectorAll('.vnode-row').forEach(r => r.classList.remove('done', 'selected'));
 }
 
 go.onclick = async () => {
@@ -548,10 +651,10 @@ go.onclick = async () => {
   logEl.textContent = '';
   pipelineEl.style.display = 'block';
   opsEl.style.display = 'block';
-  codePanelEl.style.display = 'block';
+  codePanelEl.style.display = 'none';
   currentCode = code;
   resetPipeline();
-  statusLine.textContent = 'Submitting...';
+  statusLine.textContent = '🚀 Submitting...';
   try {
     const res = await fetch('/api/build', {
       method: 'POST',
@@ -586,8 +689,9 @@ async function poll(jobId, code) {
       clearInterval(iv);
       go.disabled = false;
       if (data.status === 'done') {
+        statusLine.textContent = '🎉 Status: done';
         const btn = document.createElement('button');
-        btn.textContent = 'Download result (.zip)';
+        btn.textContent = '⬇️ Download result (.zip)';
         btn.onclick = async () => {
           const r = await fetch('/api/jobs/' + jobId + '/download', { headers: { 'X-Access-Code': code } });
           const blob = await r.blob();
