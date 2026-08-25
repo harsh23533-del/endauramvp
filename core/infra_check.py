@@ -29,6 +29,8 @@ _INFRA_PATTERNS = [
      "No network access from the sandbox -- check your internet connection."),
     (re.compile(r"no space left on device", re.I),
      "The disk is full."),
+    (re.compile(r"cannot fork|resource temporarily unavailable.*fork|retry: resource temporarily unavailable", re.I),
+     "The sandbox couldn't spawn a subprocess (host process/memory limits) -- not a code bug."),
 ]
 
 

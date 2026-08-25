@@ -48,14 +48,27 @@ def _docker_available() -> bool:
 
 
 def _limit_resources():
-    """preexec_fn: apply memory/process limits to the child (POSIX only)."""
+    """
+    preexec_fn: apply resource limits to the child (POSIX only).
+
+    IMPORTANT: RLIMIT_AS (virtual address space) is deliberately NOT set
+    here. It looks like a natural memory cap, but it breaks fork() itself:
+    Linux's memory-overcommit accounting can require the forking process
+    to briefly account for the parent's full virtual address space, so a
+    tight RLIMIT_AS makes any child that spawns its OWN subprocesses
+    (pytest launching worker processes, pip launching a build backend,
+    etc.) fail immediately with "Cannot fork" -- a false "the generated
+    code is broken" signal that has nothing to do with the code at all.
+    RLIMIT_DATA (heap growth) gives a real memory ceiling without that
+    fork-time accounting problem.
+    """
     if resource is None:
         return
     try:
         resource.setrlimit(
-            resource.RLIMIT_AS, (_FALLBACK_MEM_LIMIT_BYTES, _FALLBACK_MEM_LIMIT_BYTES)
+            resource.RLIMIT_DATA, (_FALLBACK_MEM_LIMIT_BYTES, _FALLBACK_MEM_LIMIT_BYTES)
         )
-        resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
+        resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
     except Exception:
         pass  # best-effort; never block the run over a limit that couldn't be set
 
