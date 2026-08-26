@@ -316,103 +316,365 @@ _INDEX_HTML = """<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>AURA MVP</title>
+<title>AURA</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
-  textarea, input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; }
-  textarea { height: 90px; margin-bottom: 10px; }
-  button { padding: 10px 18px; font-size: 14px; border: none; border-radius: 6px; background: #111; color: #fff; cursor: pointer; margin-top: 10px; }
-  button:disabled { background: #999; cursor: not-allowed; }
-  pre { background: #0d1117; color: #c9d1d9; padding: 14px; border-radius: 6px; max-height: 240px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
-  .status { font-weight: 600; margin-top: 14px; }
-  label { font-size: 13px; color: #555; display: block; margin-top: 12px; margin-bottom: 4px; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: linear-gradient(180deg, #f6f7fb 0%, #eef1fb 40%, #f7f4fb 100%);
+    color: #1c2030;
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
 
-  #pipeline { display: none; margin-top: 24px; }
+  .hero { position: relative; height: 320vh; }
+  .hero-pin { position: sticky; top: 0; height: 100vh; overflow: hidden; }
+  #hero-canvas { position: absolute; inset: 0; display: block; }
+  .scene {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center; width: min(560px, 88vw);
+    opacity: 0; transition: opacity 0.5s ease;
+    pointer-events: none;
+  }
+  .scene.visible { opacity: 1; pointer-events: auto; }
+  .scene .eyebrow {
+    font-size: 12.5px; letter-spacing: 2px; text-transform: uppercase;
+    color: #7c5cff; font-weight: 600; margin: 0 0 10px;
+  }
+  .scene h2 {
+    font-size: clamp(28px, 5vw, 46px); margin: 0 0 12px; font-weight: 700;
+    color: #14172a; letter-spacing: -0.5px;
+  }
+  .scene p { font-size: 16px; color: #565d75; margin: 0; line-height: 1.55; }
+  .scene .cta {
+    margin-top: 26px; padding: 15px 30px; font-size: 15px; font-weight: 600;
+    color: #fff; border: none; border-radius: 999px; cursor: pointer;
+    background: linear-gradient(135deg, #7c5cff, #5b8dff);
+    box-shadow: 0 14px 30px -8px rgba(124,92,255,0.55);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .scene .cta:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 18px 36px -8px rgba(124,92,255,0.65); }
+
+  .scroll-hint {
+    position: absolute; bottom: 34px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: #8891ab; letter-spacing: 1px; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    transition: opacity 0.4s ease;
+  }
+  .scroll-hint .chev { animation: bounce 1.6s infinite; font-size: 16px; }
+  @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(6px); } }
+
+  .app { position: relative; z-index: 1; max-width: 780px; margin: 0 auto; padding: 60px 20px 90px; }
+  .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+  .brand .logo {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, #7c5cff, #5b8dff);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; font-weight: 700; color: #fff;
+    box-shadow: 0 10px 22px -6px rgba(124,92,255,0.5);
+  }
+  .brand h1 { font-size: 21px; margin: 0; color: #14172a; }
+  .brand p { margin: 2px 0 0; font-size: 13px; color: #767d94; }
+
+  .card {
+    background: rgba(255,255,255,0.75);
+    border: 1px solid rgba(20,23,42,0.06);
+    border-radius: 18px;
+    padding: 26px 26px 22px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 24px 48px -24px rgba(20,23,42,0.18);
+    margin-bottom: 20px;
+  }
+
+  label { font-size: 12.5px; color: #6b7188; display: block; margin: 14px 0 6px; letter-spacing: 0.2px; text-transform: uppercase; }
+  label:first-of-type { margin-top: 0; }
+  input, textarea {
+    width: 100%; padding: 12px 14px; font-size: 14px; color: #1c2030;
+    background: #fff;
+    border: 1px solid rgba(20,23,42,0.12);
+    border-radius: 10px; font-family: inherit;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  input:focus, textarea:focus {
+    outline: none; border-color: #7c5cff;
+    box-shadow: 0 0 0 3px rgba(124,92,255,0.15);
+  }
+  textarea { height: 92px; resize: vertical; }
+
+  button#go {
+    margin-top: 18px; width: 100%;
+    padding: 14px 20px; font-size: 14.5px; font-weight: 600; letter-spacing: 0.3px;
+    color: #fff; border: none; border-radius: 12px; cursor: pointer;
+    background: linear-gradient(135deg, #7c5cff, #5b8dff);
+    box-shadow: 0 10px 24px -6px rgba(124,92,255,0.45);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  button#go:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 14px 30px -6px rgba(124,92,255,0.55); }
+  button#go:active:not(:disabled) { transform: translateY(1px) scale(0.99); }
+  button#go:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .status { font-weight: 600; margin: 16px 2px 0; font-size: 14px; color: #363c52; }
+
+  #pipeline { display: none; }
   .vtrack { position: relative; padding-left: 4px; }
-  .vline { position: absolute; left: 21px; top: 4px; bottom: 4px; width: 4px; background: #e5e5e5; border-radius: 2px; }
-  .vline-fill { position: absolute; left: 21px; top: 4px; width: 4px; background: #111; border-radius: 2px; transition: height 0.5s ease; height: 0px; }
+  .vline { position: absolute; left: 21px; top: 4px; bottom: 4px; width: 3px; background: rgba(20,23,42,0.08); border-radius: 2px; }
+  .vline-fill { position: absolute; left: 21px; top: 4px; width: 3px; border-radius: 2px; transition: height 0.5s ease; height: 0px;
+    background: linear-gradient(180deg, #7c5cff, #5b8dff); }
   .vnodes { position: relative; z-index: 2; }
-  .vnode-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; cursor: pointer; border-radius: 8px; }
-  .vnode-row:hover { background: #f7f7f7; }
-  .vnode-row.selected { background: #eef2ff; }
-  .node { flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%; background: #fff; border: 3px solid #e5e5e5; display: flex; align-items: center; justify-content: center; font-size: 15px; transition: border-color 0.3s, background 0.3s; }
-  .node.done { border-color: #111; background: #111; color: #fff; }
-  .node.active { border-color: #d97706; background: #fff7ed; animation: pulse 1s infinite; }
-  .node.failed { border-color: #dc2626; background: #fef2f2; }
-  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(217,119,6,0.35); } 50% { box-shadow: 0 0 0 6px rgba(217,119,6,0); } }
-  .marker { position: absolute; left: 12px; width: 20px; height: 20px; font-size: 16px; transition: top 0.6s ease; z-index: 3; }
-  .vnode-label { font-size: 13px; color: #444; }
-  .vnode-row.done .vnode-label { color: #111; font-weight: 500; }
-  .vnode-hint { font-size: 10.5px; color: #999; margin-left: auto; }
+  .vnode-row {
+    display: flex; align-items: center; gap: 13px; padding: 8px 8px; cursor: pointer;
+    border-radius: 10px; transition: background 0.2s ease;
+  }
+  .vnode-row:hover { background: rgba(124,92,255,0.06); }
+  .vnode-row.selected { background: rgba(124,92,255,0.12); }
+  .node {
+    flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%;
+    background: #fff;
+    border: 2.5px solid rgba(20,23,42,0.12);
+    display: flex; align-items: center; justify-content: center; font-size: 16px;
+    transition: border-color 0.3s, background 0.3s, box-shadow 0.3s;
+    box-shadow: 0 3px 8px rgba(20,23,42,0.08);
+  }
+  .node.done {
+    border-color: #7c5cff; background: linear-gradient(135deg, #7c5cff, #5b8dff);
+    box-shadow: 0 6px 16px rgba(124,92,255,0.4);
+  }
+  .node.active { border-color: #f5a340; background: #fff2e0; animation: pulse 1.1s infinite; }
+  .node.failed { border-color: #ef5a72; background: #ffeef1; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(245,163,64,0.4); } 50% { box-shadow: 0 0 0 8px rgba(245,163,64,0); } }
+  .marker { position: absolute; left: 11px; width: 22px; height: 22px; font-size: 17px; transition: top 0.6s ease; z-index: 3; }
+  .vnode-label { font-size: 13.5px; color: #4a5069; text-transform: capitalize; }
+  .vnode-row.done .vnode-label { color: #14172a; font-weight: 600; }
+  .vnode-hint { font-size: 10px; color: #9aa1b8; margin-left: auto; letter-spacing: 0.3px; }
 
-  #ops { display: none; background: #0d1117; color: #c9d1d9; padding: 12px 14px; border-radius: 6px; max-height: 220px; overflow-y: auto; font-size: 12.5px; margin-top: 14px; }
-  #ops .op { padding: 3px 0; border-bottom: 1px solid #1f2937; }
+  #ops {
+    display: none; background: #14172a; border: 1px solid rgba(255,255,255,0.06);
+    padding: 12px 14px; border-radius: 12px; max-height: 220px; overflow-y: auto;
+    font-size: 12.5px; font-family: "SF Mono", Consolas, monospace; color: #c6cade;
+  }
+  #ops .op { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
   #ops .op:last-child { border-bottom: none; }
-  #ops .stage { color: #58a6ff; font-weight: 600; }
-  #ops .st-completed { color: #3fb950; }
-  #ops .st-failed { color: #f85149; }
-  #ops .st-skipped { color: #999; }
+  #ops .stage { color: #8fb4ff; font-weight: 600; }
+  #ops .st-completed { color: #6fe0a8; }
+  #ops .st-failed { color: #ff8098; }
+  #ops .st-skipped { color: #8991a8; }
 
-  #codePanel { display: none; margin-top: 14px; }
-  #codePanel .filename { font-size: 12.5px; color: #333; margin-bottom: 6px; font-family: monospace; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-  #codePanel .fileBtn { font-size: 11px; padding: 3px 8px; margin-top: 2px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background: #fff; }
-  #codeView { background: #0d1117; color: #d2d6db; padding: 12px 14px; border-radius: 6px; max-height: 340px; overflow: auto; font-size: 12.5px; font-family: "SF Mono", Consolas, monospace; white-space: pre-wrap; }
-  #codeView .cursor { display: inline-block; width: 7px; background: #58a6ff; animation: blink 0.8s steps(1) infinite; }
+  #codePanel { display: none; }
+  #codePanel .filename {
+    font-size: 12.5px; color: #4a5069; margin-bottom: 8px; font-family: monospace;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  }
+  #codePanel .fileBtn {
+    font-size: 11px; padding: 4px 10px; cursor: pointer; border-radius: 7px;
+    border: 1px solid rgba(20,23,42,0.14); background: #fff; color: #363c52;
+  }
+  #codePanel .fileBtn:hover { background: rgba(124,92,255,0.08); border-color: #7c5cff; }
+  #codeView {
+    background: #14172a; color: #d8dbe8; padding: 16px 18px; border-radius: 12px;
+    max-height: 360px; overflow: auto; font-size: 12.5px; line-height: 1.55;
+    font-family: "SF Mono", Consolas, monospace; white-space: pre-wrap;
+  }
+  #codeView .cursor { display: inline-block; width: 7px; background: #8fb4ff; animation: blink 0.8s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
+
+  #dl button {
+    margin-top: 4px; padding: 11px 18px; font-size: 13.5px; font-weight: 600;
+    color: #fff; border: none; border-radius: 10px; cursor: pointer;
+    background: linear-gradient(135deg, #34c98f, #23a877);
+    box-shadow: 0 8px 18px -4px rgba(35,168,119,0.4);
+  }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: rgba(20,23,42,0.15); border-radius: 4px; }
 </style>
 </head>
 <body>
-  <h2>AURA MVP</h2>
-  <p>Describe what you want built. Builds run one at a time, so yours may queue behind others.</p>
 
-  <label>Access code</label>
-  <input id="code" type="password" placeholder="Access code">
+<div class="hero">
+  <div class="hero-pin">
+    <canvas id="hero-canvas"></canvas>
 
-  <label>Build request</label>
-  <textarea id="req" placeholder='e.g. "Make me a Flask API with a /hello endpoint"'></textarea>
+    <div class="scene" id="scene-0">
+      <p class="eyebrow">AURA</p>
+      <h2>Describe what you want.</h2>
+      <p>Type a plain-English request. That's the whole input.</p>
+    </div>
 
-  <button id="go">Start build</button>
+    <div class="scene" id="scene-1">
+      <p class="eyebrow">Agent pipeline</p>
+      <h2>Watch it get built, agent by agent.</h2>
+      <p>Requirements, architecture, code, tests, security, review -- each step runs, and you can watch every one of them happen.</p>
+    </div>
 
-  <div id="statusLine" class="status"></div>
+    <div class="scene" id="scene-2">
+      <p class="eyebrow">Ready</p>
+      <h2>Ship something real.</h2>
+      <p>Working code, tested and reviewed, ready to download.</p>
+      <button class="cta" id="ctaBtn">Start building &darr;</button>
+    </div>
 
-  <div id="pipeline">
-    <div class="vtrack">
-      <div class="vline"></div>
-      <div class="vline-fill" id="lineFill"></div>
-      <div class="vnodes" id="nodes"></div>
-      <div class="marker" id="marker">🤖</div>
+    <div class="scroll-hint" id="scrollHint">
+      <span>scroll</span>
+      <span class="chev">&#8964;</span>
+    </div>
+  </div>
+</div>
+
+<div class="app" id="appSection">
+  <div class="brand">
+    <div class="logo">A</div>
+    <div>
+      <h1>AURA</h1>
+      <p>Autonomous build pipeline</p>
     </div>
   </div>
 
-  <div id="codePanel">
-    <div class="filename" id="filename"></div>
-    <div id="codeView"></div>
+  <div class="card">
+    <label>Access code</label>
+    <input id="code" type="password" placeholder="Access code">
+
+    <label>Build request</label>
+    <textarea id="req" placeholder='e.g. "A Flask API with a /hello endpoint that returns JSON"'></textarea>
+
+    <button id="go">Start build</button>
+    <div id="statusLine" class="status"></div>
   </div>
 
-  <div id="ops"></div>
+  <div class="card" id="pipelineCard" style="display:none">
+    <div id="pipeline">
+      <div class="vtrack">
+        <div class="vline"></div>
+        <div class="vline-fill" id="lineFill"></div>
+        <div class="vnodes" id="nodes"></div>
+        <div class="marker" id="marker">&#129302;</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="codeCard" style="display:none">
+    <div id="codePanel">
+      <div class="filename" id="filename"></div>
+      <div id="codeView"></div>
+    </div>
+  </div>
+
+  <div class="card" id="opsCard" style="display:none">
+    <div id="ops"></div>
+  </div>
 
   <pre id="log" style="display:none"></pre>
   <div id="dl"></div>
+</div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
+(function initHero() {
+  const canvas = document.getElementById('hero-canvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 0, 9);
+
+  const key = new THREE.DirectionalLight(0xffffff, 1.1);
+  key.position.set(4, 5, 6);
+  scene.add(key);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+
+  const coreGeom = new THREE.IcosahedronGeometry(2.1, 1);
+  const coreMat = new THREE.MeshStandardMaterial({ color: 0x7c5cff, flatShading: true, roughness: 0.35, metalness: 0.15 });
+  const core = new THREE.Mesh(coreGeom, coreMat);
+  scene.add(core);
+
+  const wireGeom = new THREE.IcosahedronGeometry(2.55, 1);
+  const wireMat = new THREE.MeshBasicMaterial({ color: 0x5b8dff, wireframe: true, transparent: true, opacity: 0.35 });
+  const wire = new THREE.Mesh(wireGeom, wireMat);
+  scene.add(wire);
+
+  const colorStops = [
+    new THREE.Color(0x7c5cff),
+    new THREE.Color(0x5b8dff),
+    new THREE.Color(0x34c98f),
+  ];
+
+  const scenes = [0, 1, 2].map(i => document.getElementById('scene-' + i));
+  const scrollHint = document.getElementById('scrollHint');
+  const heroEl = document.querySelector('.hero');
+
+  function getProgress() {
+    const rect = heroEl.getBoundingClientRect();
+    const scrollable = heroEl.offsetHeight - window.innerHeight;
+    const scrolled = -rect.top;
+    return Math.min(1, Math.max(0, scrolled / scrollable));
+  }
+
+  function updateScenes(p) {
+    const bands = [[0, 0.36], [0.30, 0.70], [0.64, 1.0]];
+    bands.forEach((b, i) => {
+      scenes[i].classList.toggle('visible', p >= b[0] && p <= b[1]);
+    });
+    scrollHint.style.opacity = p < 0.04 ? '1' : '0';
+  }
+
+  function colorAt(p) {
+    const scaled = p * (colorStops.length - 1);
+    const i = Math.min(colorStops.length - 2, Math.floor(scaled));
+    const local = scaled - i;
+    return colorStops[i].clone().lerp(colorStops[i + 1], local);
+  }
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  let progress = 0;
+  window.addEventListener('scroll', () => { progress = getProgress(); updateScenes(progress); }, { passive: true });
+  updateScenes(0);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    core.rotation.y += 0.003 + progress * 0.01;
+    core.rotation.x += 0.001;
+    wire.rotation.y -= 0.002;
+    wire.rotation.x += 0.0015;
+
+    camera.position.z = 9 - progress * 2.5;
+    const s = 1 + progress * 0.15;
+    core.scale.setScalar(s);
+    wire.scale.setScalar(s);
+
+    const c = colorAt(progress);
+    coreMat.color.copy(c);
+
+    renderer.render(scene, camera);
+  }
+  animate();
+})();
+
+document.getElementById('ctaBtn').addEventListener('click', () => {
+  document.getElementById('appSection').scrollIntoView({ behavior: 'smooth' });
+  setTimeout(() => document.getElementById('code').focus(), 600);
+});
+
 const go = document.getElementById('go');
 const statusLine = document.getElementById('statusLine');
 const logEl = document.getElementById('log');
 const dlEl = document.getElementById('dl');
-const pipelineEl = document.getElementById('pipeline');
+const pipelineCard = document.getElementById('pipelineCard');
 const nodesEl = document.getElementById('nodes');
 const lineFillEl = document.getElementById('lineFill');
 const markerEl = document.getElementById('marker');
+const opsCard = document.getElementById('opsCard');
 const opsEl = document.getElementById('ops');
-const codePanelEl = document.getElementById('codePanel');
+const codeCard = document.getElementById('codeCard');
 const codeViewEl = document.getElementById('codeView');
 const filenameEl = document.getElementById('filename');
 
-// Fixed pipeline order (matches core/orchestrator.py's log_event() call
-// sequence). Stages not in this list (e.g. "database", "issue_agent") only
-// run conditionally, so they still show up in the operations feed below but
-// don't get a dedicated node -- keeps the pipeline diagram a stable shape.
 const STAGES = [
   ['requirements', '📋'], ['architect', '🏗️'], ['planner', '🗂️'], ['coder', '💻'],
   ['devops', '⚙️'], ['tester', '🧪'], ['debugger', '🐛'], ['security', '🔒'],
@@ -456,11 +718,6 @@ function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Groups events into per-stage data: {status, detail, files: [paths]}.
-// file_written events precede the stage-completion event they belong to
-// (coder writes files, then logs "coder completed"; same for debugger
-// patches), so a pending-files buffer gets attached to the next real
-// stage event encountered.
 function computeStageData(events) {
   const data = {};
   STAGES.forEach(([s]) => data[s] = { status: 'pending', detail: null, files: [] });
@@ -480,11 +737,11 @@ function computeStageData(events) {
 
 async function selectStage(stage) {
   const info = stageData[stage];
-  if (!info || info.status === 'pending') return; // nothing to show yet
+  if (!info || info.status === 'pending') return;
   selectedStage = stage;
   document.querySelectorAll('.vnode-row').forEach(r => r.classList.remove('selected'));
   document.getElementById('row-' + stage).classList.add('selected');
-  codePanelEl.style.display = 'block';
+  codeCard.style.display = 'block';
 
   if (info.files && info.files.length > 0) {
     await showFileInPanel(stage, info.files, 0);
@@ -530,6 +787,7 @@ async function maybeStartTyping() {
   if (typing || fileQueue.length === 0 || !currentJobId || !currentCode) return;
   typing = true;
   const path = fileQueue.shift();
+  codeCard.style.display = 'block';
   filenameEl.innerHTML = '<span>✍️ writing ' + path + ' ...</span>';
   codeViewEl.textContent = '';
   let content = '';
@@ -541,7 +799,7 @@ async function maybeStartTyping() {
 
   if (!content) { typing = false; maybeStartTyping(); return; }
 
-  const totalTicks = 160; // animate any file length in roughly the same ~3s
+  const totalTicks = 160;
   const chunkSize = Math.max(1, Math.ceil(content.length / totalTicks));
   let i = 0;
   const cursor = '<span class="cursor">&nbsp;</span>';
@@ -578,28 +836,23 @@ function renderPipeline(events) {
     if (idx > lastKnownIndex) lastKnownIndex = idx;
   });
 
-  // Mark the node just past the last completed one as "active" (in progress),
-  // unless the run already failed there.
   if (!anyFailed && lastKnownIndex >= 0 && lastKnownIndex < STAGES.length - 1) {
     const nextStage = STAGES[lastKnownIndex + 1][0];
     const nextNode = document.getElementById('node-' + nextStage);
     if (nextNode && !nextNode.classList.contains('done')) nextNode.classList.add('active');
   }
 
-  // Marker + line-fill track the vertical center of the last-completed node,
-  // measured directly from the DOM so it's correct regardless of label wrap.
   if (lastKnownIndex >= 0) {
     const targetNode = document.getElementById('node-' + STAGES[lastKnownIndex][0]);
     const containerTop = nodesEl.getBoundingClientRect().top;
     const targetRect = targetNode.getBoundingClientRect();
     const centerY = targetRect.top - containerTop + targetRect.height / 2;
     lineFillEl.style.height = Math.max(0, centerY) + 'px';
-    markerEl.style.top = Math.max(0, centerY - 10) + 'px';
+    markerEl.style.top = Math.max(0, centerY - 11) + 'px';
   }
 
   stageData = computeStageData(events);
 
-  // Operations feed: append only new events since last render.
   for (let i = seenOps; i < events.length; i++) {
     const ev = events[i];
     const row = document.createElement('div');
@@ -620,8 +873,6 @@ function renderPipeline(events) {
   }
   seenOps = events.length;
   opsEl.scrollTop = opsEl.scrollHeight;
-  // Don't fight a manual click with the auto-typewriter -- only auto-advance
-  // when nobody is deliberately browsing a specific stage's code.
   if (!selectedStage) maybeStartTyping();
 }
 
@@ -647,11 +898,10 @@ go.onclick = async () => {
   if (!code || !req) { statusLine.textContent = 'Enter an access code and a request.'; return; }
   go.disabled = true;
   dlEl.innerHTML = '';
-  logEl.style.display = 'block';
   logEl.textContent = '';
-  pipelineEl.style.display = 'block';
-  opsEl.style.display = 'block';
-  codePanelEl.style.display = 'none';
+  pipelineCard.style.display = 'block';
+  opsCard.style.display = 'block';
+  codeCard.style.display = 'none';
   currentCode = code;
   resetPipeline();
   statusLine.textContent = '🚀 Submitting...';
@@ -682,7 +932,6 @@ async function poll(jobId, code) {
     const eventsData = await eventsRes.json();
     statusLine.textContent = 'Status: ' + data.status;
     logEl.textContent = data.log_tail || '';
-    logEl.scrollTop = logEl.scrollHeight;
     renderPipeline(eventsData.events || []);
 
     if (data.status === 'done' || data.status === 'error') {
