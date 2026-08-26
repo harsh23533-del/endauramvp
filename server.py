@@ -356,6 +356,61 @@ _INDEX_HTML = """<!doctype html>
   }
   .scene .cta:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 18px 36px -8px rgba(124,92,255,0.65); }
 
+  .spin-box-section {
+    position: relative; height: 92vh; min-height: 560px;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 10px; overflow: hidden;
+  }
+  #spin-canvas { position: absolute; inset: 0; display: block; }
+  .spin-box-overlay {
+    position: relative; z-index: 2; text-align: center;
+    width: min(420px, 88vw); pointer-events: auto;
+  }
+  .spin-box-overlay .eyebrow {
+    font-size: 12.5px; letter-spacing: 2px; text-transform: uppercase;
+    color: #b9a8ff; font-weight: 600; margin: 0 0 8px;
+    text-shadow: 0 1px 12px rgba(20,23,42,0.25);
+  }
+  .spin-box-overlay h2 {
+    font-size: clamp(22px, 4vw, 30px); margin: 0 0 18px; font-weight: 700;
+    color: #14172a; letter-spacing: -0.5px;
+    text-shadow: 0 1px 16px rgba(255,255,255,0.6);
+  }
+  .spin-box-overlay label {
+    font-size: 12px; color: #1c1444; display: block; margin: 18px 0 6px;
+    letter-spacing: 0.5px; text-transform: uppercase; text-align: left; font-weight: 700;
+    text-shadow: 0 0 6px rgba(255,255,255,0.95), 0 0 14px rgba(255,255,255,0.85), 0 2px 4px rgba(255,255,255,0.9);
+  }
+  .spin-box-overlay label:first-of-type { margin-top: 0; }
+  .spin-box-overlay input, .spin-box-overlay textarea {
+    display: block; width: 100%; padding: 6px 2px; font-size: 16px; font-weight: 600; color: #0c0e1a;
+    background: transparent; border: none; border-bottom: 2px solid rgba(124,92,255,0.75);
+    border-radius: 0; font-family: inherit;
+    text-shadow: 0 0 6px rgba(255,255,255,0.95), 0 0 14px rgba(255,255,255,0.85), 0 2px 4px rgba(255,255,255,0.9);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .spin-box-overlay input::placeholder, .spin-box-overlay textarea::placeholder { color: rgba(20,23,42,0.35); }
+  .spin-box-overlay input:focus, .spin-box-overlay textarea:focus {
+    outline: none; border-bottom-color: #7c5cff;
+    box-shadow: 0 1.5px 0 0 rgba(124,92,255,0.2);
+  }
+  .spin-box-overlay textarea { height: 56px; resize: vertical; padding-top: 8px; }
+  .spin-box-overlay button#go {
+    margin-top: 22px; padding: 10px 4px; font-size: 14px; font-weight: 600;
+    letter-spacing: 0.3px; color: #5b3fe0; border: none; background: transparent; cursor: pointer;
+    text-shadow: 0 1px 10px rgba(255,255,255,0.75);
+    border-bottom: 1.5px solid transparent;
+    transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  }
+  .spin-box-overlay button#go::after { content: ' →'; }
+  .spin-box-overlay button#go:hover:not(:disabled) { color: #7c5cff; border-bottom-color: #7c5cff; transform: translateX(2px); }
+  .spin-box-overlay button#go:active:not(:disabled) { transform: translateX(2px) scale(0.98); }
+  .spin-box-overlay button#go:disabled { opacity: 0.5; cursor: not-allowed; }
+  .spin-box-overlay .status {
+    font-weight: 600; margin: 12px 2px 0; font-size: 13px; color: #302a5c;
+    text-align: center; text-shadow: 0 1px 10px rgba(255,255,255,0.7);
+  }
+
   .scroll-hint {
     position: absolute; bottom: 34px; left: 50%; transform: translateX(-50%);
     font-size: 12px; color: #8891ab; letter-spacing: 1px; text-transform: uppercase;
@@ -530,15 +585,18 @@ _INDEX_HTML = """<!doctype html>
     </div>
   </div>
 
-  <div class="card">
-    <label>Access code</label>
-    <input id="code" type="password" placeholder="Access code">
-
-    <label>Build request</label>
-    <textarea id="req" placeholder='e.g. "A Flask API with a /hello endpoint that returns JSON"'></textarea>
-
-    <button id="go">Start build</button>
-    <div id="statusLine" class="status"></div>
+  <div class="spin-box-section">
+    <canvas id="spin-canvas"></canvas>
+    <div class="spin-box-overlay">
+      <p class="eyebrow">Your turn</p>
+      <h2>Give AURA the request.</h2>
+      <label>Access code</label>
+      <input id="code" type="password" placeholder="Access code">
+      <label>Build request</label>
+      <textarea id="req" placeholder='e.g. "A Flask API with a /hello endpoint that returns JSON"'></textarea>
+      <button id="go">Start build</button>
+      <div id="statusLine" class="status"></div>
+    </div>
   </div>
 
   <div class="card" id="pipelineCard" style="display:none">
@@ -660,6 +718,55 @@ document.getElementById('ctaBtn').addEventListener('click', () => {
   document.getElementById('appSection').scrollIntoView({ behavior: 'smooth' });
   setTimeout(() => document.getElementById('code').focus(), 600);
 });
+
+(function initSpinBox() {
+  const canvas = document.getElementById('spin-canvas');
+  const section = canvas.closest('.spin-box-section');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+  camera.position.set(0, 0, 10);
+
+  const key = new THREE.DirectionalLight(0xffffff, 1.1);
+  key.position.set(4, 5, 6);
+  scene.add(key);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+
+  const coreGeom = new THREE.TorusKnotGeometry(1.55, 0.32, 160, 20, 2, 3);
+  const coreMat = new THREE.MeshStandardMaterial({ color: 0x5b8dff, flatShading: true, roughness: 0.35, metalness: 0.2 });
+  const core = new THREE.Mesh(coreGeom, coreMat);
+  core.rotation.x = Math.PI / 3.2;
+  core.scale.setScalar(1.15);
+  scene.add(core);
+
+  const wireGeom = new THREE.TorusKnotGeometry(1.55, 0.32, 90, 12, 2, 3);
+  const wireMat = new THREE.MeshBasicMaterial({ color: 0x7c5cff, wireframe: true, transparent: true, opacity: 0.28 });
+  const wire = new THREE.Mesh(wireGeom, wireMat);
+  wire.rotation.x = Math.PI / 3.2;
+  wire.scale.setScalar(1.35);
+  scene.add(wire);
+
+  function resize() {
+    const w = section.clientWidth, h = section.clientHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function animate() {
+    requestAnimationFrame(animate);
+    core.rotation.y += 0.006;
+    core.rotation.x += 0.002;
+    wire.rotation.y -= 0.004;
+    wire.rotation.x += 0.003;
+    renderer.render(scene, camera);
+  }
+  animate();
+})();
 
 const go = document.getElementById('go');
 const statusLine = document.getElementById('statusLine');
@@ -905,6 +1012,9 @@ go.onclick = async () => {
   currentCode = code;
   resetPipeline();
   statusLine.textContent = '🚀 Submitting...';
+  setTimeout(() => {
+    pipelineCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 500);
   try {
     const res = await fetch('/api/build', {
       method: 'POST',
