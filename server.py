@@ -471,7 +471,7 @@ _INDEX_HTML = """<!doctype html>
 
   .status { font-weight: 600; margin: 16px 2px 0; font-size: 14px; color: #363c52; }
 
-  #pipeline { display: none; }
+  #pipeline { }
   .vtrack { position: relative; padding-left: 4px; }
   .vline { position: absolute; left: 21px; top: 4px; bottom: 4px; width: 3px; background: rgba(20,23,42,0.08); border-radius: 2px; }
   .vline-fill { position: absolute; left: 21px; top: 4px; width: 3px; border-radius: 2px; transition: height 0.5s ease; height: 0px;
@@ -504,7 +504,7 @@ _INDEX_HTML = """<!doctype html>
   .vnode-hint { font-size: 10px; color: #9aa1b8; margin-left: auto; letter-spacing: 0.3px; }
 
   #ops {
-    display: none; background: #14172a; border: 1px solid rgba(255,255,255,0.06);
+    background: #14172a; border: 1px solid rgba(255,255,255,0.06);
     padding: 12px 14px; border-radius: 12px; max-height: 220px; overflow-y: auto;
     font-size: 12.5px; font-family: "SF Mono", Consolas, monospace; color: #c6cade;
   }
@@ -515,7 +515,7 @@ _INDEX_HTML = """<!doctype html>
   #ops .st-failed { color: #ff8098; }
   #ops .st-skipped { color: #8991a8; }
 
-  #codePanel { display: none; }
+  #codePanel { }
   #codePanel .filename {
     font-size: 12.5px; color: #4a5069; margin-bottom: 8px; font-family: monospace;
     display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
