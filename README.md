@@ -1,29 +1,133 @@
-# AURA — Autonomous Coding Agent (Phase 1)
+<div align="center">
 
-AURA takes a plain-English build request and turns it into working, tested code — no manual scaffolding required.
+# 🌌 AURA
+### Autonomous Software Engineering Agent
 
-```
+*Give it a sentence. Get back a built, tested, reviewed project — or a fixed PR on an existing one.*
+
+![Python](https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/server-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+![OpenRouter](https://img.shields.io/badge/LLM-OpenRouter%20(free--tier)-8A2BE2?style=flat-square)
+![Docker](https://img.shields.io/badge/sandbox-Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
+![Status](https://img.shields.io/badge/status-active--dev-brightgreen?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)
+
+</div>
+
+---
+
+## ✨ What it does
+
+AURA is a multi-agent pipeline, not a single prompt wrapper. It plans like an architect, codes like a team, tests and security-scans its own output, and knows when to stop and hand control back to a human.
+
+It runs in two worlds:
+
+| | |
+|---|---|
+| 🏗️ **Greenfield** | Turn a plain-English request into a full, tested project from nothing |
+| 🔧 **Existing repos** | Audit, fix, and open a gated pull request against a real codebase — autonomously, within hard safety limits |
+
+---
+
+## 🚀 Usage
+
+<table>
+<tr><td><b>Build something new</b></td></tr>
+<tr><td>
+
+```bash
 python main.py "Make me a Flask API with a /hello endpoint that returns JSON"
 ```
 
-It plans the task, writes the files, installs dependencies, runs the tests, and reports back — all in one pass.
+</td></tr>
+<tr><td><b>Audit a repo — read-only, zero writes</b></td></tr>
+<tr><td>
 
-## How it works
+```bash
+python main.py --audit /path/to/repo
+```
+
+</td></tr>
+<tr><td><b>Fix a repo and open a PR</b></td></tr>
+<tr><td>
+
+```bash
+python main.py --fix-repo /path/to/repo
+python main.py --fix-repo --no-pr /path/to/repo   # stop after branch + commit
+```
+
+</td></tr>
+<tr><td><b>Run it as a bounded autonomous loop</b></td></tr>
+<tr><td>
+
+```bash
+python main.py --auto-loop /path/to/repo
+python main.py --auto-loop --max-iterations 5 /path/to/repo
+```
+
+</td></tr>
+<tr><td><b>Or spin up the web API</b></td></tr>
+<tr><td>
+
+```bash
+python server.py
+```
+
+Submit a build → poll job status → download the finished project as a zip.
+
+</td></tr>
+</table>
+
+---
+
+## 🔄 The build pipeline
 
 ```
-Request  →  Plan  →  Code  →  Write  →  Run  →  Test  →  Report
+Requirements → Architect → Plan → Code (backend + frontend) → DevOps (CI)
+     → DB Schema* → Write → Run → Test
+          ↳ on failure: Infra-check → Debugger loop → Retest
+     → Security Scan → Reviewer → Critic → Docs → Report
+```
+<sub>*only when the plan calls for one</sub>
+
+The existing-repo pipeline (`--fix-repo`) reuses this same spine:
+
+```
+Audit → Plan the fix → Implement → Test → Security Scan → Review
+     → Branch + Commit → Gated PR
 ```
 
-1. **Plan** — the Planner agent breaks the request into a concrete task list (files to create, commands to run)
-2. **Code** — the Coder agent generates the content for each file
-3. **Write** — files are saved into a sandboxed `workspace/` folder
-4. **Run** — setup commands (e.g. `pip install`) are executed
-5. **Test** — `pytest` runs against the generated code
-6. **Report** — a summary of what was built and whether tests passed is printed
+And `--auto-loop` wraps that in an outer loop:
 
-There's no debugger loop yet — if tests fail, AURA reports it rather than self-correcting. That's Phase 2.
+```
+MONITOR → detect issue → [fix pipeline] → MONITOR → ... → healthy or capped
+```
 
-## Setup
+---
+
+## 🧠 Architecture
+
+<details>
+<summary><b>30+ agents, each single-purpose, composed by an orchestrator</b></summary>
+<br>
+
+**Build agents** — `architect` · `planner` · `coder` · `frontend_coder` · `db_agent` · `devops_agent`
+
+**Quality agents** — `debugger` · `infra_check` · `security` · `dependency_scanner` · `reviewer` · `critic` · `runtime_agent` · `performance_agent`
+
+**Existing-repo agents** — `audit_agent` · `pr_agent` · `autonomous_loop`
+
+**Product & docs** — `product_manager` · `requirements_agent` · `documentation_agent` · `issue_agent` · `deployment_agent`
+
+**Infrastructure** — `release_gate` (ship/no-ship gate) · `evaluation` (scorecard) · `traceability` · `event_log` · `metrics` · `state_machine` · `failure_clustering` · `html_report` · `context_engine` · `project_memory` · `semantic_memory` · `episodic_memory`
+
+**Sandboxing & safety** — `tools/sandbox.py` (Docker execution) · `tools/permissions.py` · `tools/git_tool.py` (branch-only commits) · `tools/filesystem.py` · `tools/terminal.py` · `tools/test_runner.py`
+
+</details>
+
+---
+
+## ⚙️ Setup
 
 ```bash
 python3 -m venv venv
@@ -32,40 +136,31 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Add your Anthropic API key to `.env`:
+Add your OpenRouter key:
 
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-## Usage
-
-```bash
-python main.py "Make me a Flask API with a /hello endpoint that returns JSON"
+```env
+OPENROUTER_API_KEY=sk-or-...
 ```
 
-Generated files land in `workspace/`. Check there after a run to see what was built.
+AURA runs entirely on **OpenRouter's free-tier models**, with an automatic fallback chain — when one model hits its daily rate limit, it seamlessly falls through to the next. Run `python list_free_models.py` to see the current free lineup.
 
-## Project structure
+---
 
-```
-aura-mvp/
-├── main.py                  # CLI entry point
-├── core/
-│   ├── llm.py                # Claude API wrapper
-│   ├── planner.py            # Planner agent
-│   ├── coder.py               # Coder agent
-│   └── orchestrator.py         # Runs the full Plan → Code → Test loop
-├── tools/
-│   ├── filesystem.py         # Sandboxed read/write/list file tools
-│   ├── terminal.py             # Sandboxed shell command runner
-│   └── test_runner.py           # pytest runner
-└── workspace/                 # Generated projects land here (gitignored)
-```
+## 🛡️ Safety boundaries
 
-## Roadmap
+- 🐳 Generated and modified code executes inside a **Docker sandbox** — never on the host
+- 🌿 Existing-repo fixes always land on a fresh `aura/fix-*` branch — the default branch is **never** touched
+- ✅ A PR opens only if tests pass **and** no new high-severity security finding was introduced — otherwise AURA stops at "branch ready" for human review
+- 🛑 The autonomous loop has a **hard iteration cap** and halts immediately on any unresolved failure, rather than stacking changes unsupervised
 
-- [ ] **Debugger agent** — feed failing test output back to the Coder agent for a self-correction loop
-- [ ] Split into specialist agents (Backend, Frontend, Database, Security, Reviewer)
-- [ ] Sandbox `run_command` in Docker instead of the host shell
-- [ ] Git integration — auto-commit after each successful stage
+---
+
+## 📄 License
+
+Licensed under the [MIT License](LICENSE) — free to use, modify, and distribute.
+
+---
+
+<div align="center">
+<sub>Built by <a href="https://github.com/harsh23533-del">@harsh23533-del</a></sub>
+</div>
