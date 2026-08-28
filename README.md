@@ -1,3 +1,4 @@
+🚀 — Live/Deployed   https://aura-mvp-tp25.onrender.com/
 <div align="center">
 
 # 🌌 AURA
