@@ -1,0 +1,218 @@
+diff --git a/core/event_log.py b/core/event_log.py
+index e554a37..9d43d19 100644
+--- a/core/event_log.py
++++ b/core/event_log.py
+@@ -22,7 +22,8 @@ _LOG_FILENAME = "build-events.jsonl"
+ 
+ def log_event(stage: str, status: str, detail: str = "", task_id: str = None,
+               files_changed: list = None, tests_passed: int = None,
+-              tests_failed: int = None, confidence: float = None) -> None:
++              tests_failed: int = None, confidence: float = None,
++              file_contents: dict = None) -> None:
+     """
+     stage: e.g. "requirements", "architect", "planner", "coder",
+            "devops", "tester", "debugger", "security", "reviewer",
+@@ -33,6 +34,10 @@ def log_event(stage: str, status: str, detail: str = "", task_id: str = None,
+     Optional structured fields (section 27) -- pass whichever apply;
+     anything left as None/empty is omitted from the logged event
+     rather than written as a misleading zero/empty value.
++
++    file_contents: {path: content} for whatever this stage actually
++    wrote -- lets the frontend's "tap node to view code" panel show
++    the real output of that stage instead of just a filename list.
+     """
+     full_path = os.path.join(WORKSPACE_DIR, _LOG_FILENAME)
+     event = {
+@@ -52,5 +57,7 @@ def log_event(stage: str, status: str, detail: str = "", task_id: str = None,
+         event["tests_failed"] = tests_failed
+     if confidence is not None:
+         event["confidence"] = confidence
++    if file_contents:
++        event["file_contents"] = file_contents
+     with open(full_path, "a", encoding="utf-8") as f:
+         f.write(json.dumps(event) + "\n")
+diff --git a/core/orchestrator.py b/core/orchestrator.py
+index f6d11e6..00f10e8 100644
+--- a/core/orchestrator.py
++++ b/core/orchestrator.py
+@@ -63,9 +63,11 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+     print_requirements(requirements_spec)
+     product_plan = build_plan(requirements_spec)
+     print_plan(product_plan)
+-    write_file("requirements.md", format_spec(requirements_spec))
++    requirements_md = format_spec(requirements_spec)
++    write_file("requirements.md", requirements_md)
+     fr_count = len(requirements_spec.get("functional_requirements", []))
+-    log_event("requirements", "completed", f"{fr_count} functional requirements")
++    log_event("requirements", "completed", f"{fr_count} functional requirements",
++              file_contents={"requirements.md": requirements_md})
+ 
+     architecture = architect_design(user_request)
+     sm.enter("ARCHITECTING", str(architecture.get("stack")))
+@@ -107,7 +109,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+             write_file(task["path"], content)
+             written_files[task["path"]] = content
+     log_event("coder", "completed", f"{len(written_files)} files written",
+-              files_changed=list(written_files.keys()))
++              files_changed=list(written_files.keys()),
++              file_contents=dict(written_files))
+ 
+     if architecture.get("needs_database"):
+         print("\n--- Database Agent: designing schema ---")
+@@ -115,13 +118,15 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+         write_file("schema.sql", schema)
+         written_files["schema.sql"] = schema
+         print("  wrote schema.sql")
+-        log_event("database", "completed", "schema.sql written")
++        log_event("database", "completed", "schema.sql written",
++                  file_contents={"schema.sql": schema})
+ 
+     print("\n--- DevOps Agent: generating CI workflow ---")
+     ci_workflow = generate_ci_workflow(architecture)
+     write_file(".github/workflows/ci.yml", ci_workflow)
+     print("  wrote .github/workflows/ci.yml")
+-    log_event("devops", "completed", "ci.yml written")
++    log_event("devops", "completed", "ci.yml written",
++              file_contents={".github/workflows/ci.yml": ci_workflow})
+ 
+     git_tool.commit("Initial implementation")
+ 
+@@ -367,7 +372,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
+     readme_content = generate_readme(report)
+     write_file("README.md", readme_content)
+     print("  wrote README.md")
+-    log_event("documentation", "completed", "README.md written")
++    log_event("documentation", "completed", "README.md written",
++              file_contents={"README.md": readme_content})
+ 
+     html_content = generate_html_report(report)
+     write_file("build-report.html", html_content)
+diff --git a/server.py b/server.py
+index e695d33..ab56911 100644
+--- a/server.py
++++ b/server.py
+@@ -302,6 +302,29 @@ _INDEX_HTML = """<!doctype html>
+   .node.done { border-color: #111; background: #111; color: #fff; }
+   .node.active { border-color: #d97706; background: #fff7ed; animation: pulse 1s infinite; }
+   .node.failed { border-color: #dc2626; background: #fef2f2; }
++  .node.has-code { cursor: pointer; }
++  .node.has-code:hover { transform: scale(1.12); }
++  .node.has-code::after {
++    content: '</>'; position: absolute; margin-top: -46px; margin-left: -6px;
++    font-size: 9px; color: #555; background: #fff; border: 1px solid #ddd;
++    border-radius: 3px; padding: 0 2px;
++  }
++
++  #codeModal {
++    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55);
++    z-index: 50; align-items: center; justify-content: center;
++  }
++  #codeModal .panel {
++    background: #fff; width: min(760px, 92vw); max-height: 82vh; overflow-y: auto;
++    border-radius: 10px; padding: 18px 20px;
++  }
++  #codeModal .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
++  #codeModal .panel-header h3 { margin: 0; font-size: 1rem; }
++  #codeModal .closeBtn { cursor: pointer; border: none; background: #eee; border-radius: 6px; padding: 4px 10px; font-size: 13px; }
++  #codeModal .file-block { margin-top: 14px; }
++  #codeModal .file-name { font-family: monospace; font-size: 12.5px; font-weight: 600; color: #333; margin-bottom: 4px; }
++  #codeModal pre { background: #0d1117; color: #c9d1d9; padding: 12px 14px; border-radius: 6px; max-height: 340px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 0; }
++  #codeModal .empty-note { color: #777; font-size: 13px; }
+   @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(217,119,6,0.35); } 50% { box-shadow: 0 0 0 6px rgba(217,119,6,0); } }
+   .marker { position: absolute; top: 4px; width: 20px; height: 20px; font-size: 16px; transform: translateX(-50%); transition: left 0.6s ease; z-index: 3; }
+   .labels { display: flex; justify-content: space-between; margin-top: 4px; }
+@@ -345,6 +368,16 @@ _INDEX_HTML = """<!doctype html>
+   <pre id="log" style="display:none"></pre>
+   <div id="dl"></div>
+ 
++  <div id="codeModal">
++    <div class="panel">
++      <div class="panel-header">
++        <h3 id="codeModalTitle">Code</h3>
++        <button class="closeBtn" id="codeModalClose">Close</button>
++      </div>
++      <div id="codeModalBody"></div>
++    </div>
++  </div>
++
+ <script>
+ const go = document.getElementById('go');
+ const statusLine = document.getElementById('statusLine');
+@@ -356,6 +389,44 @@ const labelsEl = document.getElementById('labels');
+ const lineFillEl = document.getElementById('lineFill');
+ const markerEl = document.getElementById('marker');
+ const opsEl = document.getElementById('ops');
++const codeModal = document.getElementById('codeModal');
++const codeModalTitle = document.getElementById('codeModalTitle');
++const codeModalBody = document.getElementById('codeModalBody');
++const codeModalClose = document.getElementById('codeModalClose');
++
++// Latest event object seen per stage (kept so a node click can look up
++// that stage's file_contents without re-fetching).
++let stageEvents = {};
++
++function openCodeModal(stage) {
++  const ev = stageEvents[stage];
++  const files = (ev && ev.file_contents) || null;
++  codeModalTitle.textContent = stage + (ev && ev.detail ? ' — ' + ev.detail : '');
++  codeModalBody.innerHTML = '';
++  if (!files || Object.keys(files).length === 0) {
++    const p = document.createElement('p');
++    p.className = 'empty-note';
++    p.textContent = 'No code recorded for this stage yet.';
++    codeModalBody.appendChild(p);
++  } else {
++    Object.keys(files).forEach(path => {
++      const block = document.createElement('div');
++      block.className = 'file-block';
++      const name = document.createElement('div');
++      name.className = 'file-name';
++      name.textContent = path;
++      const pre = document.createElement('pre');
++      pre.textContent = files[path]; // textContent, never innerHTML -- code must not be parsed as HTML
++      block.appendChild(name);
++      block.appendChild(pre);
++      codeModalBody.appendChild(block);
++    });
++  }
++  codeModal.style.display = 'flex';
++}
++
++codeModalClose.onclick = () => { codeModal.style.display = 'none'; };
++codeModal.onclick = (e) => { if (e.target === codeModal) codeModal.style.display = 'none'; };
+ 
+ // Fixed pipeline order (matches core/orchestrator.py's log_event() call
+ // sequence). Stages not in this list (e.g. "database", "issue_agent") only
+@@ -373,6 +444,8 @@ STAGES.forEach(([stage, icon]) => {
+   node.className = 'node';
+   node.id = 'node-' + stage;
+   node.textContent = icon;
++  node.title = 'Tap to view code';
++  node.onclick = () => openCodeModal(stage);
+   nodesEl.appendChild(node);
+   const label = document.createElement('span');
+   label.textContent = stage;
+@@ -390,10 +463,12 @@ function renderPipeline(events) {
+   events.forEach(ev => {
+     const idx = stageIndex[ev.stage];
+     if (idx === undefined) return;
++    stageEvents[ev.stage] = ev;
+     const node = document.getElementById('node-' + ev.stage);
+     node.classList.remove('active', 'done', 'failed');
+     if (ev.status === 'failed') { node.classList.add('failed'); anyFailed = true; }
+     else { node.classList.add('done'); }
++    node.classList.toggle('has-code', !!(ev.file_contents && Object.keys(ev.file_contents).length));
+     if (idx > lastKnownIndex) lastKnownIndex = idx;
+   });
+ 
+@@ -430,7 +505,9 @@ function resetPipeline() {
+   opsEl.innerHTML = '';
+   lineFillEl.style.width = '0%';
+   markerEl.style.left = '0px';
+-  document.querySelectorAll('.node').forEach(n => n.classList.remove('active', 'done', 'failed'));
++  stageEvents = {};
++  codeModal.style.display = 'none';
++  document.querySelectorAll('.node').forEach(n => n.classList.remove('active', 'done', 'failed', 'has-code'));
+ }
+ 
+ go.onclick = async () => {
