@@ -65,6 +65,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     print_plan(product_plan)
     write_file("requirements.md", format_spec(requirements_spec))
     fr_count = len(requirements_spec.get("functional_requirements", []))
+    log_event("file_written", "completed", "requirements.md", files_changed=["requirements.md"])
     log_event("requirements", "completed", f"{fr_count} functional requirements")
 
     architecture = architect_design(user_request)
@@ -116,12 +117,14 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         write_file("schema.sql", schema)
         written_files["schema.sql"] = schema
         print("  wrote schema.sql")
+        log_event("file_written", "completed", "schema.sql", files_changed=["schema.sql"])
         log_event("database", "completed", "schema.sql written")
 
     print("\n--- DevOps Agent: generating CI workflow ---")
     ci_workflow = generate_ci_workflow(architecture)
     write_file(".github/workflows/ci.yml", ci_workflow)
     print("  wrote .github/workflows/ci.yml")
+    log_event("file_written", "completed", ".github/workflows/ci.yml", files_changed=[".github/workflows/ci.yml"])
     log_event("devops", "completed", "ci.yml written")
 
     git_tool.commit("Initial implementation")
@@ -369,6 +372,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     readme_content = generate_readme(report)
     write_file("README.md", readme_content)
     print("  wrote README.md")
+    log_event("file_written", "completed", "README.md", files_changed=["README.md"])
     log_event("documentation", "completed", "README.md written")
 
     html_content = generate_html_report(report)
