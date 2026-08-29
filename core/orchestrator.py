@@ -94,22 +94,39 @@ def build(user_request: str, require_approval: bool = False) -> dict:
 
     print("\n--- Coder: writing files ---")
     sm.enter("IMPLEMENTING")
+    coder_failures = []
     for task in tasks:
         if task["type"] == "create_file":
             role = classify_file(task["path"])
             print(f"  writing {task['path']} ... ({role})")
             write_fn = write_frontend_code if role == "frontend" else write_backend_code
-            content = write_fn(
-                project_goal=user_request,
-                file_path=task["path"],
-                purpose=task.get("purpose", ""),
-                existing_files=written_files,
-            )
+            try:
+                content = write_fn(
+                    project_goal=user_request,
+                    file_path=task["path"],
+                    purpose=task.get("purpose", ""),
+                    existing_files=written_files,
+                )
+            except RuntimeError as e:
+                # A single file failing (e.g. OpenRouter free-tier quota
+                # exhausted -- an ACCOUNT-WIDE daily cap across every
+                # :free model, not per-model, so the fallback chain in
+                # core/llm.py won't save you here) should not take down
+                # the whole build. Skip this file, log it, keep going.
+                print(f"    SKIPPED (coder failed): {e}")
+                coder_failures.append({"path": task["path"], "error": str(e)})
+                log_event("file_written", "failed", str(e)[:200], files_changed=[task["path"]])
+                continue
             write_file(task["path"], content)
             written_files[task["path"]] = content
             log_event("file_written", "completed", task["path"], files_changed=[task["path"]])
-    log_event("coder", "completed", f"{len(written_files)} files written",
+    coder_status = "completed" if not coder_failures else "completed_with_errors"
+    log_event("coder", coder_status,
+              f"{len(written_files)} files written, {len(coder_failures)} failed",
               files_changed=list(written_files.keys()))
+    if coder_failures:
+        print(f"  WARNING: {len(coder_failures)} file(s) failed and were skipped -- "
+              f"see coder_failures in the report / build-events.jsonl")
 
     if architecture.get("needs_database"):
         print("\n--- Database Agent: designing schema ---")
@@ -293,6 +310,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         "architecture": architecture,
         "files_written": list(written_files.keys()),
         "planned_file_count": planned_file_count,
+        "coder_failures": coder_failures,
         "command_results": command_results,
         "test_result": test_result,
         "debug_attempts": debug_attempts,

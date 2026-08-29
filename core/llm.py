@@ -102,6 +102,19 @@ def _is_rate_limit_or_unavailable(error_text: str) -> bool:
     return "429" in error_text or "rate limit" in lowered or "404" in error_text or "unavailable" in lowered
 
 
+def _is_daily_quota_error(error_text: str) -> bool:
+    """
+    OpenRouter's free-tier daily cap (50/day with no credits purchased,
+    1000/day once you've bought $10+ lifetime) is ACCOUNT-WIDE across
+    every :free model -- not per-model. So a 429 that mentions "day" or
+    "daily" means every model in FALLBACK_CANDIDATES will also fail;
+    hopping to the next model just burns time and (per OpenRouter's own
+    docs) failed attempts still count against the same quota.
+    """
+    lowered = error_text.lower()
+    return "429" in error_text and ("day" in lowered or "daily" in lowered)
+
+
 def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries: int = 2, role: str = None) -> str:
     """
     Call the LLM, retrying transient errors on the same model, and
@@ -143,6 +156,17 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
                 latency = time.time() - start
                 metrics.record_attempt(call_id, model, attempt, latency, False, error=str(e))
                 last_error = f"{model}: {e}"
+                if _is_daily_quota_error(str(e)):
+                    # Account-wide daily cap hit -- every remaining model
+                    # in the chain shares this same quota, so stop
+                    # immediately instead of burning the rest of the chain.
+                    raise RuntimeError(
+                        f"OpenRouter daily free-tier quota exhausted (account-wide, "
+                        f"not per-model): {e}\n"
+                        f"Buy $10+ of OpenRouter credit (one-time, never has to be "
+                        f"spent) to raise the cap from 50/day to 1000/day, or wait "
+                        f"until the daily reset."
+                    ) from e
                 if _is_rate_limit_or_unavailable(str(e)):
                     break  # don't waste retries on an exhausted/unavailable model
             if attempt < retries:
