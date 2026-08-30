@@ -174,14 +174,44 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
     the current one is rate-limited or unavailable -- retrying an
     exhausted daily quota just wastes time.
 
+    Two things bound the worst case, both important on a shared/hosted
+    deployment where the account-wide free-tier quota (50/day) can be
+    exhausted by other users' builds:
+      - a wall-clock budget (AURA_LLM_CALL_BUDGET_SECONDS, default 60s)
+        across the WHOLE call -- every model x every retry combined --
+        so one call can never block for the theoretical worst case of
+        ~6 models x 3 attempts x 30s timeout (~9-10 minutes). Without
+        this, a build can look "stuck" on whichever stage happens to be
+        mid-call when the quota runs out, because nothing else in the
+        pipeline reports progress until that single call finally gives
+        up or succeeds.
+      - a print() per attempt, so the build's log (visible via the web
+        UI's log panel / log_tail) shows which model is being tried and
+        why it failed in real time, instead of going silent for the
+        entire duration of a slow/exhausted call.
+
     role: optional model-router hint ("reasoning" | "coding" | "fast").
     """
     client = _get_client()
     last_error = None
     call_id = metrics.new_call_id()
+    call_start = time.time()
+    budget = float(os.environ.get("AURA_LLM_CALL_BUDGET_SECONDS", "60"))
+    tried = []
 
     for model in _model_chain(role):
         for attempt in range(retries + 1):
+            elapsed = time.time() - call_start
+            if elapsed > budget:
+                raise RuntimeError(
+                    f"LLM call exceeded its {budget:.0f}s time budget after "
+                    f"{elapsed:.0f}s (tried: {', '.join(tried) or 'nothing yet'}). "
+                    f"This stops a single call from blocking the whole build for "
+                    f"minutes when the free-tier quota is exhausted -- retry the "
+                    f"build, add your own OpenRouter key, or raise "
+                    f"AURA_LLM_CALL_BUDGET_SECONDS. Last error: {last_error}"
+                )
+            print(f"    [llm] {model} (attempt {attempt + 1}/{retries + 1})...")
             start = time.time()
             try:
                 response = client.chat.completions.create(
@@ -204,10 +234,14 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
                 metrics.record_attempt(call_id, model, attempt, latency, False,
                                         prompt_tokens, completion_tokens, error="empty response")
                 last_error = f"empty response (model: {model})"
+                print(f"    [llm] {model} returned an empty response, retrying...")
+                tried.append(f"{model} (empty)")
             except Exception as e:
                 latency = time.time() - start
                 metrics.record_attempt(call_id, model, attempt, latency, False, error=str(e))
                 last_error = f"{model}: {e}"
+                tried.append(model)
+                print(f"    [llm] {model} failed: {str(e)[:150]}")
                 if _is_daily_quota_error(str(e)):
                     # Account-wide daily cap hit -- every remaining model
                     # in the chain shares this same quota, so stop
