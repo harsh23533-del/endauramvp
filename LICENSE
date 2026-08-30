@@ -1,4 +1,3 @@
-🚀 — Live/Deployed   https://aura-mvp-tp25.onrender.com/
 <div align="center">
 
 # 🌌 AURA
@@ -145,48 +144,11 @@ OPENROUTER_API_KEY=sk-or-...
 
 AURA runs entirely on **OpenRouter's free-tier models**, with an automatic fallback chain — when one model hits its daily rate limit, it seamlessly falls through to the next. Run `python list_free_models.py` to see the current free lineup.
 
-See `.env.example` for every other config knob (`ACCESS_CODE`, rate limiting, sandbox override, per-role model overrides).
-
----
-
-## 🔑 Bring your own API key
-
-By default, everyone hitting the web UI shares the host's `OPENROUTER_API_KEY` — that's what the per-IP rate limit (`RATE_LIMIT_MAX` builds per `RATE_LIMIT_WINDOW`) exists to protect.
-
-Anyone can skip that limit entirely by pasting their **own** free OpenRouter key into the "Use your own OpenRouter API key" field on the build form:
-
-- The key is sent only with that one build request — never written to disk, logged, or echoed back in any API response.
-- That build runs entirely against the caller's own OpenRouter account and quota, not the host's.
-- Requests that supply their own key are exempt from the shared rate limiter.
-
-Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys). The same thing works from the CLI:
-
-```bash
-python main.py --api-key sk-or-v1-... "Make me a Flask API with a /hello endpoint"
-```
-
----
-
-## ☁️ Deploy
-
-The repo includes a `render.yaml`, so on [Render](https://render.com) you can use **New → Blueprint**, point it at this repo, and it will pick up the build/start commands and env vars automatically. Just fill in `OPENROUTER_API_KEY` and `ACCESS_CODE` as secrets when prompted.
-
-For any other host (Railway, Fly.io, a plain VPS, etc.), the equivalent manual setup is:
-
-```bash
-pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port $PORT
-```
-
-with `OPENROUTER_API_KEY` and `ACCESS_CODE` set as environment variables.
-
-**On Docker-less hosts** (most PaaS web services, including Render's standard plans): AURA's sandbox automatically falls back from a Docker container to a resource-limited subprocess confined to the workspace directory, so builds still run and tests still execute — full container isolation just isn't available there. Set `AURA_FORCE_SUBPROCESS_SANDBOX=1` to test that fallback path locally even when Docker is installed.
-
 ---
 
 ## 🛡️ Safety boundaries
 
-- 🐳 Generated and modified code executes inside a **Docker sandbox** when one is available, or a resource-limited, workspace-confined subprocess when it isn't (see Deploy above) — never directly on the host's own files
+- 🐳 Generated and modified code executes inside a **Docker sandbox** — never on the host
 - 🌿 Existing-repo fixes always land on a fresh `aura/fix-*` branch — the default branch is **never** touched
 - ✅ A PR opens only if tests pass **and** no new high-severity security finding was introduced — otherwise AURA stops at "branch ready" for human review
 - 🛑 The autonomous loop has a **hard iteration cap** and halts immediately on any unresolved failure, rather than stacking changes unsupervised

@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
+from core import llm  # noqa: E402  (after load_dotenv)
 from core.orchestrator import build  # noqa: E402  (after load_dotenv)
 from tools.filesystem import WORKSPACE_DIR  # noqa: E402
 
@@ -99,7 +100,7 @@ def _worker():
             job["status"] = "running"
         log_buffer = io.StringIO()
         try:
-            with redirect_stdout(log_buffer):
+            with redirect_stdout(log_buffer), llm.use_api_key(job.get("api_key")):
                 report = build(job["request"])
             # Snapshot the event trace before archiving/returning to the
             # loop -- the NEXT queued build's reset_workspace() would wipe
@@ -193,6 +194,11 @@ def _require_access(x_access_code: str | None):
 
 class BuildRequest(BaseModel):
     request: str = Field(..., min_length=1, max_length=MAX_REQUEST_CHARS)
+    # Bring-your-own-key: if set, this build runs on the caller's own
+    # OpenRouter account instead of the server's OPENROUTER_API_KEY, so
+    # it doesn't touch the host's free-tier quota. Never persisted to
+    # disk or included in any job/report response -- see start_build().
+    api_key: str | None = Field(default=None, max_length=200)
 
 
 # -------------------------------------------------------------- routes ---
@@ -201,14 +207,29 @@ class BuildRequest(BaseModel):
 @app.post("/api/build")
 def start_build(body: BuildRequest, request: Request, x_access_code: str | None = Header(default=None)):
     _require_access(x_access_code)
-    if not rate_limiter.check(_client_key(request)):
+    own_key = (body.api_key or "").strip() or None
+    # The shared rate limit exists to protect the SERVER's OpenRouter
+    # quota. A caller running on their own key isn't touching that
+    # quota, so they don't need to be capped by it -- the LLM's own
+    # request queue is per-account already.
+    if not own_key and not rate_limiter.check(_client_key(request)):
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit exceeded: max {RATE_LIMIT_MAX} builds per {RATE_LIMIT_WINDOW // 60} minutes.",
+            detail=f"Rate limit exceeded: max {RATE_LIMIT_MAX} builds per {RATE_LIMIT_WINDOW // 60} minutes. "
+                   f"Add your own OpenRouter API key to skip this limit.",
         )
     job_id = uuid.uuid4().hex[:12]
     with jobs_lock:
-        jobs[job_id] = {"status": "queued", "request": body.request, "log": "", "created": time.time()}
+        # api_key lives only in this in-memory dict entry for the life of
+        # the job -- never logged, archived, or echoed back in any
+        # response (see job_status/_slim_report below).
+        jobs[job_id] = {
+            "status": "queued",
+            "request": body.request,
+            "api_key": own_key,
+            "log": "",
+            "created": time.time(),
+        }
     work_queue.put(job_id)
     return {"job_id": job_id, "status": "queued", "queue_position": work_queue.qsize()}
 
@@ -592,6 +613,21 @@ _INDEX_HTML = """<!doctype html>
       <h2>Give AURA the request.</h2>
       <label>Access code</label>
       <input id="code" type="password" placeholder="Access code">
+
+      <details id="byokBox" style="margin:10px 0;">
+        <summary style="cursor:pointer;font-size:13px;color:#aaa;">
+          Use your own OpenRouter API key (optional)
+        </summary>
+        <p style="font-size:12px;color:#888;margin:8px 0 6px;">
+          Leave blank to share the host's key (subject to the rate limit below).
+          Paste your own free key from
+          <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>
+          to run unlimited builds on your own quota -- it's sent only with this
+          request, used for this build, and never stored on the server.
+        </p>
+        <input id="ownKey" type="password" placeholder="sk-or-v1-...">
+      </details>
+
       <label>Build request</label>
       <textarea id="req" placeholder='e.g. "A Flask API with a /hello endpoint that returns JSON"'></textarea>
       <button id="go">Start build</button>
@@ -1002,6 +1038,7 @@ function resetPipeline() {
 go.onclick = async () => {
   const code = document.getElementById('code').value;
   const req = document.getElementById('req').value;
+  const ownKey = document.getElementById('ownKey').value.trim();
   if (!code || !req) { statusLine.textContent = 'Enter an access code and a request.'; return; }
   go.disabled = true;
   dlEl.innerHTML = '';
@@ -1019,7 +1056,7 @@ go.onclick = async () => {
     const res = await fetch('/api/build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Access-Code': code },
-      body: JSON.stringify({ request: req })
+      body: JSON.stringify({ request: req, api_key: ownKey || null })
     });
     if (!res.ok) { statusLine.textContent = 'Error: ' + (await res.json()).detail; go.disabled = false; return; }
     const data = await res.json();

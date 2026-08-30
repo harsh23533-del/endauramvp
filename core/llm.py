@@ -17,12 +17,50 @@ before. Passing no role (the default) keeps the old single-chain
 behavior unchanged -- this is additive, not a breaking change.
 """
 
+import contextvars
 import json
 import os
 import re
 import time
 from openai import OpenAI
 from core import metrics
+
+# Per-build API key override (PDF section: bring-your-own-key).
+#
+# server.py runs exactly one build at a time on a single background
+# worker thread (see its module docstring), so a contextvar set for the
+# duration of that build is enough to route every LLM call made deep
+# inside the agent pipeline -- architect, coder, debugger, etc. -- to a
+# caller-supplied OpenRouter key instead of the server's own, without
+# threading an api_key parameter through 30+ agent modules.
+_request_api_key: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "aura_request_api_key", default=None
+)
+
+
+class use_api_key:
+    """
+    Context manager: run the wrapped block using `api_key` for every
+    LLM call made inside it, instead of the server's own
+    OPENROUTER_API_KEY. Pass None (or a blank string) to fall back to
+    the server's key -- callers don't need to branch on whether the
+    user supplied one.
+
+        with use_api_key(user_supplied_key):
+            build(user_request)
+    """
+
+    def __init__(self, api_key: str | None):
+        self.api_key = api_key.strip() if api_key else None
+        self._token = None
+
+    def __enter__(self):
+        self._token = _request_api_key.set(self.api_key)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _request_api_key.reset(self._token)
+        return False
 
 # Default free model. OpenRouter's free-tier lineup changes over time --
 # if this one stops working, either:
@@ -61,12 +99,26 @@ _client = None
 
 
 def _get_client() -> OpenAI:
+    # A per-build caller-supplied key (see use_api_key above) always wins
+    # and never touches the cached server-key client below -- built fresh
+    # each time since it's scoped to one build, not the process lifetime.
+    override_key = _request_api_key.get()
+    if override_key:
+        return OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=override_key,
+            timeout=30.0,
+            max_retries=0,
+        )
+
     global _client
     if _client is None:
         api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "OPENROUTER_API_KEY is not set. Add it to your .env file."
+                "OPENROUTER_API_KEY is not set. Add it to your .env file, "
+                "or supply your own key with use_api_key()/--api-key/the "
+                "web form's \"Your own API key\" field."
             )
         _client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
