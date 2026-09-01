@@ -4,7 +4,14 @@ Converts the Requirements Analyst's FR list into Epic -> User Story -> Task
 breakdown (PDF section 6). Deterministic (no LLM call) so it never adds a
 rate-limit hit or a new failure surface -- it's a structured transform of
 data AURA already has.
-"""
+"""cd "D:\aura mvp\aura-mvp"
+git status   # confirm host-live, clean
+Copy-Item "$env:USERPROFILE\Downloads\fix-coder-stuck-timeout.patch" -Destination .
+git apply fix-coder-stuck-timeout.patch
+Remove-Item "fix-coder-stuck-timeout.patch"
+git add core/llm.py .env.example
+git commit -m "fix: bound LLM call time so a slow/exhausted quota can't stall a whole stage"
+git push origin host-live
 
 
 def _slug(text: str, max_len: int = 24) -> str:
