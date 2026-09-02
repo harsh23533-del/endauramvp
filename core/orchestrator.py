@@ -32,6 +32,7 @@ from core.runtime_agent import check_runtime, format_runtime
 from core.state_machine import StateMachine
 from core.failure_clustering import cluster_failures, format_clusters
 from core.deployment_agent import run_deployment, format_deployment
+from core.live_deploy_agent import run_live_deploy, format_live_deploy
 from tools.filesystem import write_file, reset_workspace
 from tools.sandbox import run_in_sandbox
 from tools.test_runner import run_tests
@@ -382,6 +383,19 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         report["deployment"] = deployment
         print("\n" + format_deployment(deployment))
         sm.enter("DEPLOYED" if deployment["stage"] == "PRODUCTION" else "RELEASE_READY")
+
+        # Real, public deploy -- separate from the simulated pipeline
+        # above. Gated on the same staging-validated signal; see
+        # core/live_deploy_agent.py for why it's still a no-op unless
+        # RENDER_API_KEY etc. are configured on this host.
+        live_deploy = run_live_deploy(written_files, runtime_result)
+        report["live_deploy"] = live_deploy
+        print("\n" + format_live_deploy(live_deploy))
+        log_event(
+            "live_deploy",
+            "completed" if live_deploy["deployed"] else ("skipped" if not live_deploy["attempted"] else "failed"),
+            live_deploy["detail"],
+        )
     else:
         sm.enter("RELEASE_READY" if gate["status"] == "RELEASE_READY" else "BLOCKED")
     report["state_timeline"] = sm.transitions
@@ -417,6 +431,8 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     print(f"Git branch    : {build_branch}{' (merged to main)' if merged else ' (NOT merged -- still on this branch)'}")
     if deployment:
         print(f"Deployment    : {deployment['stage']}")
+    if deployment and report.get("live_deploy", {}).get("deployed"):
+        print(f"Live URL      : {report['live_deploy']['live_url']}")
     metrics_result = report["metrics"]
     print(f"LLM calls     : {metrics_result['invocations']} logical / {metrics_result['total_attempts']} attempts, "
           f"{metrics_result['total_latency']}s, {metrics_result['total_tokens']} tokens")

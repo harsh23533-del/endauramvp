@@ -171,6 +171,7 @@ def _slim_report(report: dict) -> dict:
         "security_passed": (report.get("security_result") or {}).get("passed"),
         "release_gate": (report.get("release_gate") or {}).get("status"),
         "deployment_stage": (report.get("deployment") or {}).get("stage"),
+        "live_url": (report.get("live_deploy") or {}).get("live_url"),
         "git_merged": report.get("git_merged"),
         "debug_attempts": report.get("debug_attempts"),
     }
@@ -593,12 +594,21 @@ _INDEX_HTML = """<!doctype html>
   #codeView .cursor { display: inline-block; width: 7px; background: #8fb4ff; animation: blink 0.8s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
+  #dl { display: flex; gap: 10px; flex-wrap: wrap; }
   #dl button {
     margin-top: 4px; padding: 11px 18px; font-size: 13.5px; font-weight: 600;
     color: #fff; border: none; border-radius: 10px; cursor: pointer;
     background: linear-gradient(135deg, #34c98f, #23a877);
     box-shadow: 0 8px 18px -4px rgba(35,168,119,0.4);
   }
+  #dl a.live-link {
+    margin-top: 4px; padding: 11px 18px; font-size: 13.5px; font-weight: 600;
+    color: #fff; border: none; border-radius: 10px; cursor: pointer;
+    background: linear-gradient(135deg, #7c5cff, #5b8dff);
+    box-shadow: 0 8px 18px -4px rgba(124,92,255,0.45);
+    text-decoration: none; display: inline-block;
+  }
+  #dl a.live-link:hover { filter: brightness(1.08); }
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: rgba(20,23,42,0.15); border-radius: 4px; }
@@ -1161,6 +1171,16 @@ async function poll(jobId, code) {
         };
         dlEl.innerHTML = '';
         dlEl.appendChild(btn);
+        const liveUrl = data.report && data.report.live_url;
+        if (liveUrl) {
+          const link = document.createElement('a');
+          link.href = liveUrl;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.className = 'live-link';
+          link.textContent = '🌐 View live';
+          dlEl.appendChild(link);
+        }
       } else {
         statusLine.textContent += ' -- ' + (data.error || 'unknown error');
       }
