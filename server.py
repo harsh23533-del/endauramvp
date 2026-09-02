@@ -184,7 +184,24 @@ def _client_key(request: Request) -> str:
     return (fwd.split(",")[0].strip() if fwd else request.client.host) or "unknown"
 
 
-def _require_access(x_access_code: str | None):
+def _require_access(x_access_code: str | None, *, own_key: str | None = None, job_id: str | None = None):
+    """
+    Gate access to the shared server.
+
+    Skipped entirely when the caller brings their own OpenRouter key
+    (own_key, known at build time) or when the job being queried was
+    itself built on a caller-supplied key (job_id) -- in both cases the
+    request never touches the host's shared quota. The job_id (12 random
+    hex chars, generated server-side) doubles as a capability token for
+    its own routes, same principle as an unguessable share-link.
+    """
+    if own_key:
+        return
+    if job_id is not None:
+        with jobs_lock:
+            job = jobs.get(job_id)
+        if job is not None and job.get("api_key"):
+            return
     if not x_access_code or not secrets.compare_digest(x_access_code, ACCESS_CODE):
         raise HTTPException(status_code=401, detail="Missing or invalid X-Access-Code header.")
 
@@ -206,8 +223,8 @@ class BuildRequest(BaseModel):
 
 @app.post("/api/build")
 def start_build(body: BuildRequest, request: Request, x_access_code: str | None = Header(default=None)):
-    _require_access(x_access_code)
     own_key = (body.api_key or "").strip() or None
+    _require_access(x_access_code, own_key=own_key)
     # The shared rate limit exists to protect the SERVER's OpenRouter
     # quota. A caller running on their own key isn't touching that
     # quota, so they don't need to be capped by it -- the LLM's own
@@ -236,7 +253,7 @@ def start_build(body: BuildRequest, request: Request, x_access_code: str | None 
 
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str, x_access_code: str | None = Header(default=None)):
-    _require_access(x_access_code)
+    _require_access(x_access_code, job_id=job_id)
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
@@ -261,7 +278,7 @@ def job_events(job_id: str, x_access_code: str | None = Header(default=None)):
     build ever runs at a time); once done/errored it returns the snapshot
     captured right as the build finished, before the workspace could be reused.
     """
-    _require_access(x_access_code)
+    _require_access(x_access_code, job_id=job_id)
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
@@ -282,7 +299,7 @@ def job_file(job_id: str, path: str, x_access_code: str | None = Header(default=
     the completed job's report once it's done. Path is confined to the
     workspace directory, same as tools/filesystem.py's own guard.
     """
-    _require_access(x_access_code)
+    _require_access(x_access_code, job_id=job_id)
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
@@ -310,7 +327,7 @@ def job_file(job_id: str, path: str, x_access_code: str | None = Header(default=
 
 @app.get("/api/jobs/{job_id}/download")
 def job_download(job_id: str, x_access_code: str | None = Header(default=None)):
-    _require_access(x_access_code)
+    _require_access(x_access_code, job_id=job_id)
     with jobs_lock:
         job = jobs.get(job_id)
         if not job or job.get("status") != "done" or not job.get("archive"):
@@ -431,6 +448,28 @@ _INDEX_HTML = """<!doctype html>
     font-weight: 600; margin: 12px 2px 0; font-size: 13px; color: #302a5c;
     text-align: center; text-shadow: 0 1px 10px rgba(255,255,255,0.7);
   }
+  .byok-toggle {
+    display: inline-block; margin: 16px 0 2px; padding: 7px 16px;
+    font-size: 12.5px; font-weight: 800; letter-spacing: 0.3px;
+    color: #5b3fe0; background: rgba(255,255,255,0.7);
+    border: 1.5px solid rgba(124,92,255,0.55); border-radius: 999px;
+    cursor: pointer; font-family: inherit;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, color 0.15s ease;
+  }
+  .byok-toggle:hover { background: rgba(255,255,255,0.92); border-color: #7c5cff; transform: translateY(-1px); }
+  .byok-toggle.active {
+    background: linear-gradient(135deg, #7c5cff, #5b8dff); color: #fff; border-color: transparent;
+    box-shadow: 0 6px 16px -4px rgba(124,92,255,0.55);
+  }
+  .byok-toggle:active { transform: translateY(0) scale(0.98); }
+  #byokBox { text-align: left; margin-top: 8px; }
+  .byok-help {
+    font-size: 12.5px; color: #241c52; font-weight: 600; line-height: 1.55;
+    margin: 8px 2px 6px;
+    text-shadow: 0 0 6px rgba(255,255,255,0.95), 0 0 14px rgba(255,255,255,0.85), 0 2px 4px rgba(255,255,255,0.9);
+  }
+  .byok-help a { font-weight: 800; color: #5b3fe0; text-decoration: underline; text-underline-offset: 2px; }
+  .byok-help a:hover { color: #341f99; }
 
   .scroll-hint {
     position: absolute; bottom: 34px; left: 50%; transform: translateX(-50%);
@@ -611,22 +650,23 @@ _INDEX_HTML = """<!doctype html>
     <div class="spin-box-overlay">
       <p class="eyebrow">Your turn</p>
       <h2>Give AURA the request.</h2>
-      <label>Access code</label>
-      <input id="code" type="password" placeholder="Access code">
+      <div id="accessCodeGroup">
+        <label>Access code</label>
+        <input id="code" type="password" placeholder="Access code">
+      </div>
 
-      <details id="byokBox" style="margin:10px 0;">
-        <summary style="cursor:pointer;font-size:13px;color:#aaa;">
-          Use your own OpenRouter API key (optional)
-        </summary>
-        <p style="font-size:12px;color:#888;margin:8px 0 6px;">
-          Leave blank to share the host's key (subject to the rate limit below).
+      <button type="button" id="byokToggle" class="byok-toggle">Use your own OpenRouter API key</button>
+
+      <div id="byokBox" style="display:none;">
+        <p class="byok-help">
           Paste your own free key from
           <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>
-          to run unlimited builds on your own quota -- it's sent only with this
-          request, used for this build, and never stored on the server.
+          to run unlimited builds on your own quota, no access code needed --
+          it's sent only with this request, used for this build, and never
+          stored on the server.
         </p>
         <input id="ownKey" type="password" placeholder="sk-or-v1-...">
-      </details>
+      </div>
 
       <label>Build request</label>
       <textarea id="req" placeholder='e.g. "A Flask API with a /hello endpoint that returns JSON"'></textarea>
@@ -1035,18 +1075,41 @@ function resetPipeline() {
   document.querySelectorAll('.vnode-row').forEach(r => r.classList.remove('done', 'selected'));
 }
 
+const byokToggle = document.getElementById('byokToggle');
+const byokBox = document.getElementById('byokBox');
+const accessCodeGroup = document.getElementById('accessCodeGroup');
+let useOwnKey = false;
+
+byokToggle.onclick = () => {
+  useOwnKey = !useOwnKey;
+  byokToggle.classList.toggle('active', useOwnKey);
+  byokToggle.textContent = useOwnKey ? 'Using your own OpenRouter API key' : 'Use your own OpenRouter API key';
+  byokBox.style.display = useOwnKey ? 'block' : 'none';
+  accessCodeGroup.style.display = useOwnKey ? 'none' : 'block';
+  statusLine.textContent = '';
+  if (useOwnKey) setTimeout(() => document.getElementById('ownKey').focus(), 150);
+};
+
 go.onclick = async () => {
   const code = document.getElementById('code').value;
   const req = document.getElementById('req').value;
   const ownKey = document.getElementById('ownKey').value.trim();
-  if (!code || !req) { statusLine.textContent = 'Enter an access code and a request.'; return; }
+  if (useOwnKey) {
+    if (!ownKey || !req) { statusLine.textContent = 'Enter your OpenRouter API key and a request.'; return; }
+  } else {
+    if (!code || !req) { statusLine.textContent = 'Enter an access code and a request.'; return; }
+  }
   go.disabled = true;
   dlEl.innerHTML = '';
   logEl.textContent = '';
   pipelineCard.style.display = 'block';
   opsCard.style.display = 'block';
   codeCard.style.display = 'none';
-  currentCode = code;
+  // '(byok)' is just a non-empty placeholder so the frontend's own
+  // "do we have a code" checks (e.g. maybeStartTyping) don't block file
+  // polling -- the backend never checks this value for BYOK jobs, see
+  // _require_access(job_id=...) server-side.
+  currentCode = useOwnKey ? (code || '(byok)') : code;
   resetPipeline();
   statusLine.textContent = '🚀 Submitting...';
   setTimeout(() => {
@@ -1060,7 +1123,7 @@ go.onclick = async () => {
     });
     if (!res.ok) { statusLine.textContent = 'Error: ' + (await res.json()).detail; go.disabled = false; return; }
     const data = await res.json();
-    poll(data.job_id, code);
+    poll(data.job_id, currentCode);
   } catch (e) {
     statusLine.textContent = 'Request failed: ' + e;
     go.disabled = false;
