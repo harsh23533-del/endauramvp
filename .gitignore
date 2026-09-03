@@ -4,3 +4,7 @@ __pycache__/
 workspace/
 .pytest_cache/
 venv/
+
+# Local persistent checkout used by core/live_deploy_agent.py to push
+# builds to LIVE_DEPLOY_REPO -- not part of this repo's own history.
+/live_deploy_checkout/
