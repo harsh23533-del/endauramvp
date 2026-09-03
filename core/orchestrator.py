@@ -372,6 +372,7 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     # deployment_agent, since require_approval may be False for this
     # build even though production deploy always requires it.
     deployment = None
+    live_deploy = None
     if merged:
         sm.enter("DEPLOYING")
         deployment = run_deployment(
@@ -389,15 +390,27 @@ def build(user_request: str, require_approval: bool = False) -> dict:
         # core/live_deploy_agent.py for why it's still a no-op unless
         # RENDER_API_KEY etc. are configured on this host.
         live_deploy = run_live_deploy(written_files, runtime_result)
-        report["live_deploy"] = live_deploy
-        print("\n" + format_live_deploy(live_deploy))
-        log_event(
-            "live_deploy",
-            "completed" if live_deploy["deployed"] else ("skipped" if not live_deploy["attempted"] else "failed"),
-            live_deploy["detail"],
-        )
     else:
         sm.enter("RELEASE_READY" if gate["status"] == "RELEASE_READY" else "BLOCKED")
+        # Previously this branch left report["live_deploy"] unset entirely
+        # -- a BLOCKED build showed nothing at all about deployment, with
+        # no way to tell "never attempted" from "silently failed". Always
+        # record *why*, even when nothing was actually run.
+        if gate["status"] != "RELEASE_READY":
+            why = "; ".join(gate["reasons"])
+            live_deploy = {"attempted": False, "deployed": False, "live_url": None,
+                            "detail": f"not attempted -- release gate BLOCKED: {why}"}
+        else:
+            live_deploy = {"attempted": False, "deployed": False, "live_url": None,
+                            "detail": "not attempted -- release-ready but not yet merged (pending human approval)"}
+
+    report["live_deploy"] = live_deploy
+    print("\n" + format_live_deploy(live_deploy))
+    log_event(
+        "live_deploy",
+        "completed" if live_deploy["deployed"] else ("skipped" if not live_deploy["attempted"] else "failed"),
+        live_deploy["detail"],
+    )
     report["state_timeline"] = sm.transitions
 
     print("\n--- Documentation Agent: generating README ---")
@@ -431,8 +444,11 @@ def build(user_request: str, require_approval: bool = False) -> dict:
     print(f"Git branch    : {build_branch}{' (merged to main)' if merged else ' (NOT merged -- still on this branch)'}")
     if deployment:
         print(f"Deployment    : {deployment['stage']}")
-    if deployment and report.get("live_deploy", {}).get("deployed"):
-        print(f"Live URL      : {report['live_deploy']['live_url']}")
+    live_deploy_result = report.get("live_deploy") or {}
+    if live_deploy_result.get("deployed"):
+        print(f"Live URL      : {live_deploy_result['live_url']}")
+    else:
+        print(f"Live Deploy   : {live_deploy_result.get('detail', 'not attempted')}")
     metrics_result = report["metrics"]
     print(f"LLM calls     : {metrics_result['invocations']} logical / {metrics_result['total_attempts']} attempts, "
           f"{metrics_result['total_latency']}s, {metrics_result['total_tokens']} tokens")

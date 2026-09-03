@@ -172,6 +172,7 @@ def _slim_report(report: dict) -> dict:
         "release_gate": (report.get("release_gate") or {}).get("status"),
         "deployment_stage": (report.get("deployment") or {}).get("stage"),
         "live_url": (report.get("live_deploy") or {}).get("live_url"),
+        "live_deploy_detail": (report.get("live_deploy") or {}).get("detail"),
         "git_merged": report.get("git_merged"),
         "debug_attempts": report.get("debug_attempts"),
     }
@@ -609,6 +610,11 @@ _INDEX_HTML = """<!doctype html>
     text-decoration: none; display: inline-block;
   }
   #dl a.live-link:hover { filter: brightness(1.08); }
+  #dl .live-status-note {
+    margin-top: 4px; padding: 10px 16px; font-size: 12.5px; font-weight: 600;
+    color: #4a4370; background: rgba(124,92,255,0.1); border: 1px solid rgba(124,92,255,0.3);
+    border-radius: 10px; max-width: 420px; line-height: 1.5;
+  }
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: rgba(20,23,42,0.15); border-radius: 4px; }
@@ -1172,6 +1178,7 @@ async function poll(jobId, code) {
         dlEl.innerHTML = '';
         dlEl.appendChild(btn);
         const liveUrl = data.report && data.report.live_url;
+        const liveDetail = data.report && data.report.live_deploy_detail;
         if (liveUrl) {
           const link = document.createElement('a');
           link.href = liveUrl;
@@ -1180,6 +1187,11 @@ async function poll(jobId, code) {
           link.className = 'live-link';
           link.textContent = '🌐 View live';
           dlEl.appendChild(link);
+        } else if (liveDetail) {
+          const note = document.createElement('div');
+          note.className = 'live-status-note';
+          note.textContent = '🌐 Live deploy: ' + liveDetail;
+          dlEl.appendChild(note);
         }
       } else {
         statusLine.textContent += ' -- ' + (data.error || 'unknown error');
