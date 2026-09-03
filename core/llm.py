@@ -221,6 +221,24 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
                         {"role": "system", "content": system},
                         {"role": "user", "content": user_message},
                     ],
+                    # Root cause of a whole class of bad output (a file's
+                    # content becomes literally "Here's a thinking
+                    # process: 1. Analyze User Request..." with no code
+                    # at all; a reviewer JSON parse failing on a stray
+                    # `{`/`}` from CSS mentioned mid-reasoning): several
+                    # of the free-tier models in this chain are
+                    # reasoning models that, by default, put their
+                    # chain-of-thought straight into `message.content`
+                    # instead of a separate channel -- and can burn the
+                    # entire max_tokens budget "thinking" before ever
+                    # emitting the actual file/JSON. OpenRouter's unified
+                    # `reasoning` request param (supported by every
+                    # model, extra_body since it's not part of the
+                    # OpenAI SDK's typed surface) tells the model to
+                    # keep reasoning internally but strip it from the
+                    # response entirely. See
+                    # https://openrouter.ai/docs/use-cases/reasoning-tokens
+                    extra_body={"reasoning": {"exclude": True}},
                 )
                 latency = time.time() - start
                 content = response.choices[0].message.content
@@ -266,11 +284,56 @@ def call_claude(system: str, user_message: str, max_tokens: int = 4000, retries:
     )
 
 
+def _iter_balanced_json_candidates(text: str):
+    """
+    Yield every syntactically-balanced, string-quote-aware {...}
+    substring in text, trying EVERY '{' as a possible start (not just
+    resuming after the previous match) -- a stray, never-actually-closed
+    '{' earlier in the text (e.g. unrelated prose) would otherwise
+    swallow everything after it into one bogus giant span, since brace-
+    depth counting alone can't tell "prose brace" from "JSON brace".
+    _extract_json below picks the longest candidate that actually
+    parses, which in practice is the real (outermost, complete) object
+    rather than a coincidental nested fragment or a bogus prose span.
+    """
+    n = len(text)
+    for start in range(n):
+        if text[start] != "{":
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for j in range(start, n):
+            ch = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start:j + 1]
+                    break
+
+
 def _extract_json(text: str) -> str:
     """
-    Best-effort cleanup of an LLM response before json.loads:
-    strip markdown fences, and if there's stray prose around the
-    JSON object, cut down to the outermost {...} block.
+    Best-effort cleanup of an LLM response before json.loads: strip
+    markdown fences, then -- if there's stray prose around (or between)
+    JSON-looking braces -- find every balanced {...} candidate and
+    return the LONGEST one that actually parses as JSON (the real,
+    complete answer is virtually always the biggest valid object; a
+    shorter one that also happens to parse is more likely an incidental
+    nested fragment or unrelated prose brace). Falls back to a naive
+    first-'{'-to-last-'}' slice only if nothing balanced parses at all.
     """
     text = text.strip()
 
@@ -284,11 +347,25 @@ def _extract_json(text: str) -> str:
     if text.startswith("json"):
         text = text[4:].strip()
 
-    if not text.startswith("{"):
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            text = text[start:end + 1]
+    candidates = list(_iter_balanced_json_candidates(text))
+    parseable = []
+    for candidate in candidates:
+        try:
+            json.loads(candidate)
+            parseable.append(candidate)
+        except json.JSONDecodeError:
+            continue
+    if parseable:
+        return max(parseable, key=len)
+    if candidates:
+        return max(candidates, key=len)  # best guess; caller's retry-on-failure loop still applies
+
+    # Nothing balanced found at all (e.g. truncated mid-object) -- last-
+    # resort naive slice, better than returning the raw prose untouched.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start:end + 1]
 
     return text
 

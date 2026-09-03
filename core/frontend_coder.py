@@ -5,7 +5,7 @@ CSS, and client-side JS. Aware of the backend's API surface (routes
 already written) so it doesn't blindly assume behavior (PDF section 10).
 """
 from core.llm import call_claude
-from core.coder import _strip_markdown_fences
+from core.coder import _strip_markdown_fences, _looks_like_reasoning_dump
 from core.context_engine import get_relevant_context
 from core.semantic_memory import get_knowledge
 
@@ -27,7 +27,8 @@ paths and methods -- don't invent endpoints that don't exist.
 """ + get_knowledge("frontend")
 
 
-def write_frontend_code(project_goal: str, file_path: str, purpose: str, existing_files: dict) -> str:
+def write_frontend_code(project_goal: str, file_path: str, purpose: str, existing_files: dict,
+                         retries: int = 2) -> str:
     relevant_files = get_relevant_context(purpose, file_path, existing_files)
     context_lines = []
     for path, content in relevant_files.items():
@@ -44,9 +45,22 @@ Files already written in this project (backend routes, other frontend files, etc
 
 Write the complete content of {file_path} now."""
 
-    response_text = call_claude(
-        system=FRONTEND_SYSTEM_PROMPT,
-        user_message=user_message,
-        role="coding",
+    last_cleaned = None
+    for attempt in range(retries + 1):
+        response_text = call_claude(
+            system=FRONTEND_SYSTEM_PROMPT,
+            user_message=user_message,
+            role="coding",
+        )
+        cleaned = _strip_markdown_fences(response_text)
+        if not _looks_like_reasoning_dump(cleaned):
+            return cleaned
+        last_cleaned = cleaned
+
+    # See core/coder.py's write_backend_code for why this raises instead
+    # of writing the reasoning prose to disk -- same orchestrator-level
+    # per-file skip-and-continue handling applies here too.
+    raise RuntimeError(
+        f"model kept returning chain-of-thought prose instead of {file_path}'s actual "
+        f"content after {retries + 1} attempts (starts with: {last_cleaned[:120]!r})"
     )
-    return _strip_markdown_fences(response_text)
