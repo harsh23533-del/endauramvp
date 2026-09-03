@@ -7,10 +7,11 @@ Hosted PaaS environments (Render, Railway, etc.) generally run the app
 itself inside a container and do NOT expose a Docker daemon to it, so
 `docker run` simply isn't reachable there. Rather than fail hard, this
 falls back to a still-guarded direct subprocess (workspace-locked cwd,
-timeout, BLOCKED_PATTERNS + permission matrix, resource limits via
-`resource.setrlimit` on POSIX) so the same code path works locally
-(full container isolation) and when hosted (host-level isolation).
-Set AURA_FORCE_SUBPROCESS_SANDBOX=1 to always use the fallback even if
+timeout, BLOCKED_PATTERNS + permission matrix, resource limits via the
+shell's own `ulimit` -- see _run_in_subprocess_fallback() for why NOT
+a preexec_fn) so the same code path works locally (full container
+isolation) and when hosted (host-level isolation). Set
+AURA_FORCE_SUBPROCESS_SANDBOX=1 to always use the fallback even if
 Docker happens to be present (useful for testing the hosted path).
 """
 import os
@@ -23,13 +24,17 @@ from tools.permissions import check as check_permission
 IMAGE_NAME = "aura-sandbox"
 DEFAULT_TIMEOUT = 120
 
-try:
-    import resource  # POSIX only
-except ImportError:
-    resource = None
-
 # Cap on generated-project subprocess memory (bytes) when Docker isn't
 # available to enforce it for us. 512MB, matching the docker --memory flag.
+# IMPORTANT: this is applied as RLIMIT_DATA (heap growth), not RLIMIT_AS
+# (virtual address space) -- RLIMIT_AS looks like a more natural memory
+# cap, but it breaks fork() itself: Linux's memory-overcommit accounting
+# can require the forking process to briefly account for the parent's
+# full virtual address space, so a tight RLIMIT_AS makes any child that
+# spawns its OWN subprocesses (pytest launching worker processes, pip
+# launching a build backend, etc.) fail immediately with "Cannot fork"
+# -- a false "the generated code is broken" signal with nothing to do
+# with the code at all.
 _FALLBACK_MEM_LIMIT_BYTES = 512 * 1024 * 1024
 
 
@@ -45,32 +50,6 @@ def _docker_available() -> bool:
         return True
     except Exception:
         return False
-
-
-def _limit_resources():
-    """
-    preexec_fn: apply resource limits to the child (POSIX only).
-
-    IMPORTANT: RLIMIT_AS (virtual address space) is deliberately NOT set
-    here. It looks like a natural memory cap, but it breaks fork() itself:
-    Linux's memory-overcommit accounting can require the forking process
-    to briefly account for the parent's full virtual address space, so a
-    tight RLIMIT_AS makes any child that spawns its OWN subprocesses
-    (pytest launching worker processes, pip launching a build backend,
-    etc.) fail immediately with "Cannot fork" -- a false "the generated
-    code is broken" signal that has nothing to do with the code at all.
-    RLIMIT_DATA (heap growth) gives a real memory ceiling without that
-    fork-time accounting problem.
-    """
-    if resource is None:
-        return
-    try:
-        resource.setrlimit(
-            resource.RLIMIT_DATA, (_FALLBACK_MEM_LIMIT_BYTES, _FALLBACK_MEM_LIMIT_BYTES)
-        )
-        resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
-    except Exception:
-        pass  # best-effort; never block the run over a limit that couldn't be set
 
 
 def _run_in_docker(command: str, timeout: int) -> dict:
@@ -101,9 +80,31 @@ def _run_in_docker(command: str, timeout: int) -> dict:
 
 
 def _run_in_subprocess_fallback(command: str, timeout: int) -> dict:
-    """Host-level fallback used when no Docker daemon is reachable."""
+    """
+    Host-level fallback used when no Docker daemon is reachable.
+
+    Resource limits are applied via the shell's own `ulimit` builtin,
+    NOT a preexec_fn -- Python's subprocess module can only use the much
+    cheaper posix_spawn() path (spawn the shell without first forking a
+    full copy of THIS process's own memory image) when preexec_fn is
+    None; setting one unconditionally forces the classic fork()+exec()
+    path instead. On a small, memory-constrained host that fork of
+    AURA's own (fairly large, FastAPI+openai-loaded) process is exactly
+    the kind of "Cannot fork" / "Resource temporarily unavailable"
+    failure infra_check.py exists to detect -- so avoiding it here,
+    rather than just detecting it downstream, is the real fix.
+    """
     if command.startswith("pip "):
         command = f'"{sys.executable}" -m pip ' + command[len("pip "):]
+    # `ulimit -d` is RLIMIT_DATA in KB (not bytes); `ulimit -u` is
+    # RLIMIT_NPROC. Same two limits _limit_resources() used to set via
+    # preexec_fn, just applied by the shell itself before it (cheaply)
+    # forks/execs the actual pip/pytest/python-app.py children.
+    limited_command = (
+        f"ulimit -d {_FALLBACK_MEM_LIMIT_BYTES // 1024} 2>/dev/null; "
+        "ulimit -u 512 2>/dev/null; "
+        f"{command}"
+    )
     kwargs = dict(
         shell=True,
         cwd=WORKSPACE_DIR,
@@ -113,10 +114,8 @@ def _run_in_subprocess_fallback(command: str, timeout: int) -> dict:
         errors="replace",
         timeout=timeout,
     )
-    if resource is not None:
-        kwargs["preexec_fn"] = _limit_resources
     try:
-        result = subprocess.run(command, **kwargs)
+        result = subprocess.run(limited_command, **kwargs)
         return {
             "command": command,
             "stdout": result.stdout,
